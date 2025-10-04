@@ -1,4 +1,4 @@
-streamlit==1.36.0
+streamlit==1.37.1
 pandas==2.2.2
-openpyxl
-xlrd
+openpyxl==3.1.2
+xlrd==2.0.1
