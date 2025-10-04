@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta
@@ -9,7 +8,7 @@ st.title("📒 Gestione Clienti — Dashboard semplice")
 
 st.markdown("""
 Questa piccola app ti permette di **vedere, filtrare e cercare** i clienti
-partendo dal file Excel `GESTIONE_CLIENTI.xlsm` (foglio **Indice**).
+caricando il file Excel `GESTIONE_CLIENTI.xlsm` (foglio **Indice**).
 Se non hai esperienza: tranquillo, basta seguire i passi qui sotto. 😊
 """)
 
@@ -46,22 +45,13 @@ def load_from_excel(file):
         df = df[df["Cliente"].notna()]
     return df
 
-default_path = "GESTIONE_CLIENTI.xlsm"
-uploaded = None
-
-col1, col2 = st.columns([1,2])
-with col1:
-    use_default = st.checkbox("Usa il file presente nella stessa cartella dell'app (GESTIONE_CLIENTI.xlsm)", value=True)
-with col2:
-    uploaded = st.file_uploader("Oppure carica il file Excel (.xlsm / .xlsx)", type=["xlsm","xlsx"], accept_multiple_files=False)
+uploaded = st.file_uploader("📂 Carica il file Excel (.xlsm / .xlsx)", type=["xlsm","xlsx"], accept_multiple_files=False)
 
 df = None
 load_error = None
 
 try:
-    if use_default:
-        df = load_from_excel(default_path)
-    elif uploaded is not None:
+    if uploaded is not None:
         df = load_from_excel(uploaded)
 except Exception as e:
     load_error = str(e)
@@ -69,7 +59,7 @@ except Exception as e:
 if df is None:
     if load_error:
         st.error("Non sono riuscito a leggere il file. Errore: " + load_error)
-    st.info("Carica un file .xlsm/.xlsx o spunta 'Usa il file...' sopra.")
+    st.info("Carica un file .xlsm/.xlsx per continuare.")
     st.stop()
 
 # ---------------------------
@@ -153,4 +143,4 @@ elif chart_type == "Scadenze per mese" and "Prossima Scadenza Noleggio" in filte
 elif chart_type == "Distribuzione contratti aperti" and "Tot. Contratti (aperti)" in filtered.columns:
     st.bar_chart(filtered["Tot. Contratti (aperti)"].fillna(0).astype(int).value_counts().sort_index())
 
-st.caption("Suggerimento: cambia i filtri nella barra laterale per aggiornare tabella e grafici.")
+st.caption("Suggerimento: ricarica un file Excel aggiornato quando vuoi, e usa i filtri nella barra laterale per analizzarlo.")
