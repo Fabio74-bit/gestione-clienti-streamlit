@@ -2,12 +2,12 @@ name: Aggiorna file Excel da OneDrive locale
 
 on:
   schedule:
-    - cron: "0 11 * * *"  # ogni giorno alle 13:00 italiane (11:00 UTC)
-  workflow_dispatch:       # per avvio manuale
+    - cron: "0 11 * * *" # ogni giorno alle 12:00 italiane (11:00 UTC)
+  workflow_dispatch:      # per avvio manuale
 
 jobs:
   update_excel:
-    runs-on: macos-latest
+    runs-on: self-hosted  # usa il runner locale sul Mac
 
     steps:
       - name: Checkout repository
@@ -15,22 +15,13 @@ jobs:
 
       - name: Copia file Excel dal OneDrive locale
         run: |
-          echo "Copia del file Excel dal percorso OneDrive locale..."
-          LOCAL_PATH="/Users/fabioscaranello/Library/CloudStorage/OneDrive-SHTSrl/TUTTO CLIENTI TOP/GESTIONE_CLIENTI.xlsm"
-          TARGET_PATH="./GESTIONE_CLIENTI.xlsm"
-
-          if [ -f "$LOCAL_PATH" ]; then
-            cp "$LOCAL_PATH" "$TARGET_PATH"
-            echo "✅ File copiato con successo!"
-          else
-            echo "❌ ERRORE: file non trovato in $LOCAL_PATH"
-            exit 1
-          fi
+          echo "📂 Copia del file Excel dal percorso OneDrive locale..."
+          cp "/Users/fabioscaranello/Library/CloudStorage/OneDrive-SHTSrl/TUTTO CLIENTI TOP/GESTIONE_CLIENTI.xlsm" ./GESTIONE_CLIENTI.xlsm || (echo "❌ ERRORE: file non trovato in OneDrive" && exit 1)
 
       - name: Commit e push del nuovo file Excel
         run: |
-          git config --global user.name "Fabio Scaranello"
-          git config --global user.email "fabio.scaranello@shtsrl.com"
+          git config user.name "Fabio74-bit"
+          git config user.email "fabio.scaranello@shtsrl.com"
           git add GESTIONE_CLIENTI.xlsm
-          git commit -m "Auto-update GESTIONE_CLIENTI.xlsm da OneDrive"
-          git push
+          git commit -m "🔄 Aggiornamento automatico file Excel da OneDrive" || echo "Nessuna modifica da committare"
+          git push origin main
