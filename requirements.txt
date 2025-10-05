@@ -1,6 +1,5 @@
-streamlit
-pandas
-openpyxl
-numpy
-matplotlib
-altair
+streamlit>=1.36.0
+pandas>=2.2.0
+openpyxl>=3.1.0
+python-dateutil>=2.8.2
+
