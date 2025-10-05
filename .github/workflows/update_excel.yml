@@ -1,0 +1,28 @@
+name: Aggiorna file Excel da OneDrive locale
+
+on:
+  schedule:
+    - cron: "0 11 * * *"  # ogni giorno alle 12:00 italiane (11:00 UTC)
+  workflow_dispatch:      # per avvio manuale
+
+jobs:
+  update_excel:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Copia il file Excel da OneDrive
+        run: |
+          mkdir -p ./tmp_copy
+          cp "/Users/runner/Library/CloudStorage/OneDrive-SHTSrl/TUTTO CLIENTI TOP/GESTIONE_CLIENTI.xlsm" ./GESTIONE_CLIENTI.xlsm || echo "⚠️ File non trovato nel percorso OneDrive"
+          ls -l ./GESTIONE_CLIENTI.xlsm || echo "Nessun file copiato"
+
+      - name: Commit e push se aggiornato
+        run: |
+          git config user.name "GitHub Action"
+          git config user.email "action@github.com"
+          git add GESTIONE_CLIENTI.xlsm || echo "Nessuna modifica trovata"
+          git diff --cached --quiet || git commit -m "♻️ Update automatico GESTIONE_CLIENTI.xlsm da OneDrive"
+          git push
