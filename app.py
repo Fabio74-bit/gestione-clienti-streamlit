@@ -1,4 +1,5 @@
 import re
+import io
 import json
 import unicodedata
 from typing import Tuple, Optional, Dict
@@ -8,11 +9,9 @@ import streamlit as st
 # ======================= Look & feel "app" =======================
 st.set_page_config(
     page_title="Gestione Clienti",
-    page_icon="icon-512.png",    # metti qui il path della tua icona nel repo (es. "icon-512.png" o "static/icon-512.png")
+    page_icon="icon-512.png",    # se la tieni in /static usa "static/icon-512.png"
     layout="wide"
 )
-
-# Nasconde menu/header/footer per sembrare un'app nativa
 st.markdown("""
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -45,12 +44,6 @@ def get_first_nonempty(values) -> str:
 
 # =========== Parsing foglio cliente: contratti + note ===========
 def parse_contracts_and_notes(sheet_df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
-    """
-    Estrae:
-      - tabella 'Contratti di Noleggio'
-      - 'NOTE CLIENTI' (una riga di testo)
-    Torna (contratti_df, note_text).
-    """
     df = sheet_df.copy()
     df = df.dropna(axis=1, how="all")
     df = df.astype(str).where(~df.isna(), None)
@@ -58,11 +51,11 @@ def parse_contracts_and_notes(sheet_df: pd.DataFrame) -> Tuple[pd.DataFrame, str
     col0 = df.columns[0]
     first_col = df[col0].apply(lambda x: str(x).strip() if x is not None else "")
 
-    # Trova riga intestazione "Contratti di Noleggio"
+    # "Contratti di Noleggio" -> header sulla riga successiva
     header_row = None
     for idx, key in first_col.items():
         if normalize_text(key).startswith("contratti di noleggio"):
-            header_row = idx + 1  # header sulla riga successiva
+            header_row = idx + 1
             break
 
     contratti_df = pd.DataFrame()
@@ -72,14 +65,16 @@ def parse_contracts_and_notes(sheet_df: pd.DataFrame) -> Tuple[pd.DataFrame, str
         rows = []
         for r in range(header_row + 1, len(df)):
             row0 = str(df.iloc[r, 0]).strip() if pd.notna(df.iloc[r, 0]) else ""
+            # stop su NOTE CLIENTI
             if normalize_text(row0).startswith("note clienti"):
                 break
+            # stop su riga vuota
             if all((str(x).strip() == "" or str(x).strip().lower() == "none") for x in df.iloc[r].tolist()):
                 break
             rows.append([None if str(x).strip().lower() == "none" else x for x in df.iloc[r].tolist()])
         if rows:
             contratti_df = pd.DataFrame(rows, columns=headers)
-            # parse base per date (colonne con "data" nel nome)
+            # parse base per date (colonne che contengono "data")
             for c in list(contratti_df.columns):
                 if "data" in normalize_text(c):
                     contratti_df[c] = pd.to_datetime(contratti_df[c], errors="coerce", dayfirst=True)
@@ -97,12 +92,6 @@ def parse_contracts_and_notes(sheet_df: pd.DataFrame) -> Tuple[pd.DataFrame, str
 
 # ---------- INFO CLIENTE (chiavi/valori prima dei contratti) ----------
 def parse_client_info(sheet_df: pd.DataFrame) -> Tuple[str, Dict[str, str]]:
-    """
-    Estrae:
-      - il nome cliente (righe 'Nome cliente' o 'Cliente')
-      - un dizionario di info (Indirizzo, Città, CAP, Telefono, Mail, ecc.)
-    Considera la prima colonna come etichette e si ferma a 'Contratti di Noleggio' o 'NOTE CLIENTI'.
-    """
     df = sheet_df.copy()
     df = df.dropna(axis=1, how="all")
     df = df.astype(str).where(~df.isna(), None)
@@ -110,7 +99,7 @@ def parse_client_info(sheet_df: pd.DataFrame) -> Tuple[str, Dict[str, str]]:
     col0 = df.columns[0]
     first_col = df[col0].apply(lambda x: str(x).strip() if x is not None else "")
 
-    # Trova riga di stop
+    # riga di stop: contratti o note
     stop_rows = []
     for idx, key in first_col.items():
         nk = normalize_text(key)
@@ -118,7 +107,7 @@ def parse_client_info(sheet_df: pd.DataFrame) -> Tuple[str, Dict[str, str]]:
             stop_rows.append(idx)
     stop_at = min(stop_rows) if stop_rows else len(df)
 
-    # Nome cliente
+    # nome cliente
     nome = ""
     for idx, key in first_col.items():
         if idx >= stop_at:
@@ -129,7 +118,7 @@ def parse_client_info(sheet_df: pd.DataFrame) -> Tuple[str, Dict[str, str]]:
             if nome:
                 break
 
-    # Info chiave->valore
+    # info chiave->valore
     info: Dict[str, str] = {}
     SKIP = {"scheda cliente", "torna all indice", "totale contratti", "dati cliente", "cliente", "nome cliente"}
     for idx, key in first_col.items():
@@ -148,7 +137,6 @@ def parse_client_info(sheet_df: pd.DataFrame) -> Tuple[str, Dict[str, str]]:
 
 # =============== Indice: elenco clienti & match =================
 def extract_client_list_from_indice(indice_df: pd.DataFrame) -> list:
-    """Cerca in riga 0 la colonna che contiene 'Cliente' e ritorna i nomi sotto (deduplicati)."""
     if indice_df.empty:
         return []
     header_row0 = indice_df.iloc[0].to_dict()
@@ -175,7 +163,6 @@ def extract_client_list_from_indice(indice_df: pd.DataFrame) -> list:
     return out
 
 def find_client_sheet_name(sheets: Dict[str, pd.DataFrame], cliente: str) -> Optional[str]:
-    """Trova il foglio del cliente (match normalizzato: esatto → inizia con → contiene)."""
     target = normalize_text(cliente)
     for name in sheets.keys():
         if normalize_text(name) == target:
@@ -187,6 +174,44 @@ def find_client_sheet_name(sheets: Dict[str, pd.DataFrame], cliente: str) -> Opt
         if target in normalize_text(name):
             return name
     return None
+
+# =============== Export XLSX cliente (foglio singolo) ===============
+def export_client_xlsx(cliente: str, info: Dict[str, str], contratti: pd.DataFrame, note: str) -> bytes:
+    """
+    Genera un XLSX con:
+      - sezione 'Dati Cliente' (chiave/valore)
+      - sezione 'Contratti di Noleggio'
+      - sezione 'NOTE CLIENTI'
+    NB: le macro .xlsm non sono mantenute (si crea sempre un .xlsx).
+    """
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        # 1) Info (2 colonne)
+        info_df = pd.DataFrame(list(info.items()), columns=["Campo", "Valore"])
+        info_df.to_excel(writer, sheet_name=cliente[:31] or "Cliente", index=False, startrow=0)
+        ws = writer.sheets[cliente[:31] or "Cliente"]
+
+        # 2) Titolo contratti
+        start_row = len(info_df) + 2
+        ws.cell(row=start_row, column=1, value="Contratti di Noleggio")
+        # 3) Tabella contratti
+        if not contratti.empty:
+            contr_out = contratti.copy()
+            # format date -> stringa per Excel
+            for c in contr_out.columns:
+                if pd.api.types.is_datetime64_any_dtype(contr_out[c]):
+                    contr_out[c] = contr_out[c].dt.strftime("%d/%m/%Y")
+            contr_out.to_excel(writer, sheet_name=ws.title, index=False, startrow=start_row)
+            end_row = start_row + len(contr_out) + 2
+        else:
+            end_row = start_row + 2
+
+        # 4) Note
+        ws.cell(row=end_row, column=1, value="NOTE CLIENTI")
+        ws.cell(row=end_row + 1, column=1, value=note or "")
+
+    buf.seek(0)
+    return buf.read()
 
 # ============================ APP FLOW ============================
 uploaded = st.file_uploader("📥 Carica il file Excel (.xlsx/.xlsm)", type=["xlsx", "xlsm"])
@@ -224,26 +249,15 @@ else:
     st.warning("Nessun cliente disponibile (controlla il foglio 'Indice').")
     cliente_sel = None
 
-# Persistenza semplice delle note in sessione (+ import/export JSON)
+# Persistenza semplice delle modifiche in sessione
 if "notes_store" not in st.session_state:
-    st.session_state.notes_store = {}  # type: ignore
+    st.session_state.notes_store = {}  # {cliente -> nota}
+if "info_store" not in st.session_state:
+    st.session_state.info_store = {}   # {cliente -> dict info}
+if "contracts_store" not in st.session_state:
+    st.session_state.contracts_store = {}  # {cliente -> DataFrame}
 
-with st.expander("📦 Import/Export note", expanded=False):
-    up = st.file_uploader("Carica un JSON di note (facoltativo)", type=["json"], key="upload_notes_json")
-    if up is not None:
-        try:
-            incoming = json.load(up)
-            if isinstance(incoming, dict):
-                st.session_state.notes_store.update(incoming)
-                st.success("Note importate.")
-            else:
-                st.error("Formato JSON non valido (atteso dict {cliente: nota}).")
-        except Exception as e:
-            st.error(f"Errore nel parsing del JSON: {e}")
-    notes_json = json.dumps(st.session_state.notes_store, ensure_ascii=False, indent=2)
-    st.download_button("⬇️ Scarica note (JSON)", data=notes_json, file_name="note_clienti.json", mime="application/json")
-
-# Visualizzazione scheda selezionata
+# ------------------------ Visualizzazione scheda ------------------------
 if cliente_sel and cliente_sel != "-- Seleziona --":
     foglio = find_client_sheet_name(sheets_dict, cliente_sel)
     if not foglio:
@@ -252,46 +266,112 @@ if cliente_sel and cliente_sel != "-- Seleziona --":
 
     sheet_df = sheets_dict[foglio]
 
-    # --- Dati Cliente (via, città, telefono, ecc.) ---
+    # Parse dati
     nome_cli, info_cli = parse_client_info(sheet_df)
+    contratti_df, note_esistente = parse_contracts_and_notes(sheet_df)
+
+    # Carica eventuali modifiche precedenti dalla sessione
+    info_cli = st.session_state.info_store.get(cliente_sel, info_cli)
+    contratti_df = st.session_state.contracts_store.get(cliente_sel, contratti_df)
+    note_val = st.session_state.notes_store.get(cliente_sel, note_esistente or "")
 
     st.markdown(f"### 🧾 {cliente_sel}")
     if nome_cli and normalize_text(nome_cli) != normalize_text(cliente_sel):
         st.caption(f"Nome da scheda: {nome_cli}")
 
-    if info_cli:
-        st.subheader("👤 Dati Cliente")
-        ordered = ["Indirizzo", "Città", "CAP", "TELEFONO", "MAIL", "RIF.", "RIF 2.", "IBAN", "partita iva", "SDI", "Ultimo Recall", "ultima visita"]
-        keys = [k for k in ordered if k in info_cli] + [k for k in info_cli.keys() if k not in ordered]
-        c1, c2 = st.columns(2)
-        for i, k in enumerate(keys):
-            target = c1 if i % 2 == 0 else c2
-            with target:
-                st.markdown(f"**{k}**")
-                st.write(info_cli[k])
+    # -------- Toggle MODIFICA --------
+    edit_mode = st.toggle("✏️ Modifica/Inserisci dati", value=False, help="Abilita la maschera per modificare dati, contratti e note")
 
-    # --- Contratti di Noleggio ---
-    contratti_df, note_esistente = parse_contracts_and_notes(sheet_df)
-    st.subheader("📑 Contratti di Noleggio")
-    if not contratti_df.empty:
-        display_df = contratti_df.copy()
-        for c in display_df.columns:
-            if pd.api.types.is_datetime64_any_dtype(display_df[c]):
-                display_df[c] = display_df[c].dt.strftime("%d/%m/%y")
-        st.dataframe(display_df, use_container_width=True)
+    # ====== MODALITÀ LETTURA ======
+    if not edit_mode:
+        if info_cli:
+            st.subheader("👤 Dati Cliente")
+            ordered = ["Indirizzo", "Città", "CAP", "TELEFONO", "MAIL", "RIF.", "RIF 2.", "IBAN", "partita iva", "SDI", "Ultimo Recall", "ultima visita"]
+            keys = [k for k in ordered if k in info_cli] + [k for k in info_cli.keys() if k not in ordered]
+            c1, c2 = st.columns(2)
+            for i, k in enumerate(keys):
+                target = c1 if i % 2 == 0 else c2
+                with target:
+                    st.markdown(f"**{k}**")
+                    st.write(info_cli[k])
+
+        st.subheader("📑 Contratti di Noleggio")
+        if not contratti_df.empty:
+            display_df = contratti_df.copy()
+            for c in display_df.columns:
+                if pd.api.types.is_datetime64_any_dtype(display_df[c]):
+                    display_df[c] = display_df[c].dt.strftime("%d/%m/%y")
+            st.dataframe(display_df, use_container_width=True)
+        else:
+            st.info("Nessun contratto trovato in questa scheda.")
+
+        st.subheader("📝 Note Cliente")
+        st.write(note_val or "—")
+
+    # ====== MODALITÀ MODIFICA (MASCHERA) ======
     else:
-        st.info("Nessun contratto trovato in questa scheda.")
+        st.subheader("👤 Dati Cliente — modifica")
+        # campi suggeriti + quelli extra trovati
+        base_order = ["Indirizzo", "Città", "CAP", "TELEFONO", "MAIL", "RIF.", "RIF 2.", "IBAN", "partita iva", "SDI", "Ultimo Recall", "ultima visita"]
+        extra_keys = [k for k in info_cli.keys() if k not in base_order]
+        keys = base_order + extra_keys
 
-    # --- NOTE CLIENTI ---
-    st.subheader("📝 Note Cliente")
-    current_note = st.session_state.notes_store.get(cliente_sel, note_esistente or "")
-    new_note = st.text_area("Testo note", value=current_note, height=140, placeholder="Scrivi o aggiorna le note qui…")
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("💾 Salva nota (solo in questa sessione)"):
+        # form
+        with st.form("edit_info"):
+            c1, c2 = st.columns(2)
+            new_info = {}
+            for i, k in enumerate(keys):
+                target = c1 if i % 2 == 0 else c2
+                with target:
+                    new_info[k] = st.text_input(k, value=info_cli.get(k, ""))
+            submitted_info = st.form_submit_button("💾 Salva Dati Cliente (sessione)")
+        if submitted_info:
+            st.session_state.info_store[cliente_sel] = new_info
+            info_cli = new_info
+            st.success("Dati cliente aggiornati nella sessione.")
+
+        st.subheader("📑 Contratti di Noleggio — modifica")
+        # abilita aggiunta/eliminazione righe
+        editable = contratti_df.copy()
+        # Converte eventuali datetime in stringa editabile
+        for c in editable.columns:
+            if pd.api.types.is_datetime64_any_dtype(editable[c]):
+                editable[c] = editable[c].dt.strftime("%d/%m/%Y")
+        edited = st.data_editor(
+            editable,
+            num_rows="dynamic",
+            use_container_width=True,
+            key=f"editor_{cliente_sel}"
+        )
+        if st.button("💾 Salva Contratti (sessione)"):
+            # Riprova a parse delle date
+            out = edited.copy()
+            for c in out.columns:
+                if "data" in normalize_text(c):
+                    out[c] = pd.to_datetime(out[c], errors="coerce", dayfirst=True)
+            st.session_state.contracts_store[cliente_sel] = out
+            contratti_df = out
+            st.success("Contratti aggiornati nella sessione.")
+
+        st.subheader("📝 Note Cliente — modifica")
+        new_note = st.text_area("Testo note", value=note_val, height=140, placeholder="Scrivi o aggiorna le note qui…")
+        if st.button("💾 Salva Nota (sessione)"):
             st.session_state.notes_store[cliente_sel] = new_note
-            st.success("Nota salvata nella sessione corrente.")
-    with c2:
-        st.caption("Usa 'Scarica note (JSON)' per conservarle e ricaricarle più tardi.")
+            note_val = new_note
+            st.success("Nota aggiornata nella sessione.")
+
+        # ---- Esportazioni ----
+        st.divider()
+        cA, cB, cC = st.columns(3)
+        with cA:
+            csv = contratti_df.to_csv(index=False).encode("utf-8")
+            st.download_button("⬇️ Scarica Contratti (CSV)", data=csv, file_name=f"contratti_{normalize_text(cliente_sel)}.csv", mime="text/csv")
+        with cB:
+            payload = {"cliente": cliente_sel, "info": info_cli, "note": note_val}
+            st.download_button("⬇️ Scarica Info+Note (JSON)", data=json.dumps(payload, ensure_ascii=False, indent=2), file_name=f"note_info_{normalize_text(cliente_sel)}.json", mime="application/json")
+        with cC:
+            xls_bytes = export_client_xlsx(cliente_sel, info_cli, contratti_df, note_val)
+            st.download_button("⬇️ Esporta XLSX (foglio cliente)", data=xls_bytes, file_name=f"{normalize_text(cliente_sel)}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
 else:
     st.stop()
