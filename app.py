@@ -9,7 +9,7 @@ import streamlit as st
 # ======================= Look & feel "app" =======================
 st.set_page_config(
     page_title="Gestione Clienti",
-    page_icon="icon-512.png",    # se l’hai in /static usa "static/icon-512.png"
+    page_icon="icon-512.png",    # se l’icona è in /static usa "static/icon-512.png"
     layout="wide"
 )
 st.markdown("""
@@ -108,22 +108,28 @@ def parse_client_info(sheet_df: pd.DataFrame) -> Tuple[str, Dict[str, str]]:
     # nome cliente
     nome = ""
     for idx, key in first_col.items():
-        if idx >= stop_at: break
+        if idx >= stop_at:
+            break
         nk = normalize_text(key)
         if nk in ("nome cliente", "cliente"):
             nome = get_first_nonempty([df.at[idx, c] for c in df.columns[1:]])
-            if nome: break
+            if nome:
+                break
 
     # chiave -> valore
     info: Dict[str, str] = {}
     SKIP = {"scheda cliente", "torna all indice", "totale contratti", "dati cliente", "cliente", "nome cliente"}
     for idx, key in first_col.items():
-        if idx >= stop_at: break
+        if idx >= stop_at:
+            break
         k_raw = str(key).strip()
-        if not k_raw: continue
-        if normalize_text(k_raw) in SKIP: continue
+        if not k_raw:
+            continue
+        if normalize_text(k_raw) in SKIP:
+            continue
         v = get_first_nonempty([df.at[idx, c] for c in df.columns[1:]])
-        if v: info[k_raw] = v
+        if v:
+            info[k_raw] = v
 
     return nome, info
 
@@ -247,11 +253,11 @@ if cliente_sel and cliente_sel != "-- Seleziona --":
             # ordine consigliato
             ordered = ["Indirizzo", "Città", "CAP", "TELEFONO", "MAIL", "RIF.", "RIF 2.", "IBAN", "partita iva", "SDI", "Ultimo Recall", "ultima visita"]
             keys = [k for k in ordered if k in info_cli] + [k for k in info_cli.keys() if k not in ordered]
-            c1, c2 = st.columns(1)  # colonna singola ben leggibile su iPad
+
+            # ✅ UNA sola colonna (fix dell'errore)
             for k in keys:
-                with c1:
-                    st.markdown(f"**{k}**")
-                    st.write(info_cli[k])
+                st.markdown(f"**{k}**")
+                st.write(info_cli[k])
         else:
             st.caption("Nessun dato anagrafico trovato.")
 
