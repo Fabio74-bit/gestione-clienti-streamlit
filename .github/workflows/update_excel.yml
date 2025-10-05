@@ -2,8 +2,8 @@ name: Aggiorna file Excel da OneDrive locale
 
 on:
   schedule:
-    - cron: "0 11 * * *"  # ogni giorno alle 12:00 italiane (11:00 UTC)
-  workflow_dispatch:      # per avvio manuale
+    - cron: "0 11 * * *"  # ogni giorno alle 13:00 italiane (11:00 UTC)
+  workflow_dispatch:       # per avvio manuale
 
 jobs:
   update_excel:
@@ -13,16 +13,24 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Copia il file Excel da OneDrive
+      - name: Copia file Excel dal OneDrive locale
         run: |
-          mkdir -p ./tmp_copy
-          cp "/Users/runner/Library/CloudStorage/OneDrive-SHTSrl/TUTTO CLIENTI TOP/GESTIONE_CLIENTI.xlsm" ./GESTIONE_CLIENTI.xlsm || echo "⚠️ File non trovato nel percorso OneDrive"
-          ls -l ./GESTIONE_CLIENTI.xlsm || echo "Nessun file copiato"
+          echo "Copia del file Excel dal percorso OneDrive locale..."
+          LOCAL_PATH="/Users/fabioscaranello/Library/CloudStorage/OneDrive-SHTSrl/TUTTO CLIENTI TOP/GESTIONE_CLIENTI.xlsm"
+          TARGET_PATH="./GESTIONE_CLIENTI.xlsm"
 
-      - name: Commit e push se aggiornato
+          if [ -f "$LOCAL_PATH" ]; then
+            cp "$LOCAL_PATH" "$TARGET_PATH"
+            echo "✅ File copiato con successo!"
+          else
+            echo "❌ ERRORE: file non trovato in $LOCAL_PATH"
+            exit 1
+          fi
+
+      - name: Commit e push del nuovo file Excel
         run: |
-          git config user.name "GitHub Action"
-          git config user.email "action@github.com"
-          git add GESTIONE_CLIENTI.xlsm || echo "Nessuna modifica trovata"
-          git diff --cached --quiet || git commit -m "♻️ Update automatico GESTIONE_CLIENTI.xlsm da OneDrive"
+          git config --global user.name "Fabio Scaranello"
+          git config --global user.email "fabio.scaranello@shtsrl.com"
+          git add GESTIONE_CLIENTI.xlsm
+          git commit -m "Auto-update GESTIONE_CLIENTI.xlsm da OneDrive"
           git push
