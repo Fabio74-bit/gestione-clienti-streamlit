@@ -8,16 +8,17 @@ import streamlit as st
 # ======================= Look & feel "app" =======================
 st.set_page_config(
     page_title="Gestione Clienti",
-    page_icon="icon-512.png",   # usa la tua icona nel repo; va bene anche un path tipo "static/icon-512.png"
+    page_icon="icon-512.png",    # metti qui il path della tua icona nel repo (es. "icon-512.png" o "static/icon-512.png")
     layout="wide"
 )
 
-# Nasconde menu e footer per sembrare un'app nativa
+# Nasconde menu/header/footer per sembrare un'app nativa
 st.markdown("""
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Gestione Clienti">
 <style>
-#MainMenu {visibility: hidden;}
-footer {visibility: hidden;}
-header {visibility: hidden;}  /* nasconde la top-bar di Streamlit */
+#MainMenu, header, footer {visibility: hidden;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -93,6 +94,57 @@ def parse_contracts_and_notes(sheet_df: pd.DataFrame) -> Tuple[pd.DataFrame, str
             break
 
     return contratti_df, note_text
+
+# ---------- INFO CLIENTE (chiavi/valori prima dei contratti) ----------
+def parse_client_info(sheet_df: pd.DataFrame) -> Tuple[str, Dict[str, str]]:
+    """
+    Estrae:
+      - il nome cliente (righe 'Nome cliente' o 'Cliente')
+      - un dizionario di info (Indirizzo, Città, CAP, Telefono, Mail, ecc.)
+    Considera la prima colonna come etichette e si ferma a 'Contratti di Noleggio' o 'NOTE CLIENTI'.
+    """
+    df = sheet_df.copy()
+    df = df.dropna(axis=1, how="all")
+    df = df.astype(str).where(~df.isna(), None)
+
+    col0 = df.columns[0]
+    first_col = df[col0].apply(lambda x: str(x).strip() if x is not None else "")
+
+    # Trova riga di stop
+    stop_rows = []
+    for idx, key in first_col.items():
+        nk = normalize_text(key)
+        if nk.startswith("contratti di noleggio") or nk.startswith("note clienti"):
+            stop_rows.append(idx)
+    stop_at = min(stop_rows) if stop_rows else len(df)
+
+    # Nome cliente
+    nome = ""
+    for idx, key in first_col.items():
+        if idx >= stop_at:
+            break
+        nk = normalize_text(key)
+        if nk in ("nome cliente", "cliente"):
+            nome = get_first_nonempty([df.at[idx, c] for c in df.columns[1:]])
+            if nome:
+                break
+
+    # Info chiave->valore
+    info: Dict[str, str] = {}
+    SKIP = {"scheda cliente", "torna all indice", "totale contratti", "dati cliente", "cliente", "nome cliente"}
+    for idx, key in first_col.items():
+        if idx >= stop_at:
+            break
+        k_raw = str(key).strip()
+        if not k_raw:
+            continue
+        if normalize_text(k_raw) in SKIP:
+            continue
+        v = get_first_nonempty([df.at[idx, c] for c in df.columns[1:]])
+        if v:
+            info[k_raw] = v
+
+    return nome, info
 
 # =============== Indice: elenco clienti & match =================
 def extract_client_list_from_indice(indice_df: pd.DataFrame) -> list:
@@ -199,10 +251,27 @@ if cliente_sel and cliente_sel != "-- Seleziona --":
         st.stop()
 
     sheet_df = sheets_dict[foglio]
-    contratti_df, note_esistente = parse_contracts_and_notes(sheet_df)
+
+    # --- Dati Cliente (via, città, telefono, ecc.) ---
+    nome_cli, info_cli = parse_client_info(sheet_df)
 
     st.markdown(f"### 🧾 {cliente_sel}")
+    if nome_cli and normalize_text(nome_cli) != normalize_text(cliente_sel):
+        st.caption(f"Nome da scheda: {nome_cli}")
 
+    if info_cli:
+        st.subheader("👤 Dati Cliente")
+        ordered = ["Indirizzo", "Città", "CAP", "TELEFONO", "MAIL", "RIF.", "RIF 2.", "IBAN", "partita iva", "SDI", "Ultimo Recall", "ultima visita"]
+        keys = [k for k in ordered if k in info_cli] + [k for k in info_cli.keys() if k not in ordered]
+        c1, c2 = st.columns(2)
+        for i, k in enumerate(keys):
+            target = c1 if i % 2 == 0 else c2
+            with target:
+                st.markdown(f"**{k}**")
+                st.write(info_cli[k])
+
+    # --- Contratti di Noleggio ---
+    contratti_df, note_esistente = parse_contracts_and_notes(sheet_df)
     st.subheader("📑 Contratti di Noleggio")
     if not contratti_df.empty:
         display_df = contratti_df.copy()
@@ -213,6 +282,7 @@ if cliente_sel and cliente_sel != "-- Seleziona --":
     else:
         st.info("Nessun contratto trovato in questa scheda.")
 
+    # --- NOTE CLIENTI ---
     st.subheader("📝 Note Cliente")
     current_note = st.session_state.notes_store.get(cliente_sel, note_esistente or "")
     new_note = st.text_area("Testo note", value=current_note, height=140, placeholder="Scrivi o aggiorna le note qui…")
@@ -225,4 +295,3 @@ if cliente_sel and cliente_sel != "-- Seleziona --":
         st.caption("Usa 'Scarica note (JSON)' per conservarle e ricaricarle più tardi.")
 else:
     st.stop()
-
