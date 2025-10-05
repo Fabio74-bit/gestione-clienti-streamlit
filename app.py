@@ -1,207 +1,191 @@
 import streamlit as st
 import pandas as pd
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
+import io
+import requests
 
-st.set_page_config(page_title="Gestione Clienti", layout="wide")
+# --------------------------------------------------------
+# CONFIGURAZIONE BASE DELL'APP
+# --------------------------------------------------------
+st.set_page_config(page_title="Gestione Clienti - Dashboard", layout="wide")
 
-st.title("📒 Gestione Clienti — Dashboard & Schede")
+# 🔗 Collegamento PWA (per icona su iPad)
+st.markdown(
+    '<link rel="manifest" href="manifest.json">',
+    unsafe_allow_html=True
+)
+
+st.title("📒 Gestione Clienti — Dashboard completa")
 
 st.markdown("""
-Questa applicazione ti permette di **gestire i clienti**, analizzare le **scadenze**
-e visualizzare le **schede dettagliate** direttamente dal file Excel `GESTIONE_CLIENTI.xlsm`.
+Questa app mostra i dati dei clienti aggiornati **automaticamente da OneDrive** 📂  
+Ogni giorno alle **12:00** viene scaricata una nuova versione del file Excel `GESTIONE_CLIENTI.xlsm`.
 """)
 
-# ---------------------------
-# FUNZIONE DI CARICAMENTO DATI
-# ---------------------------
-def load_from_excel(file):
-    raw = pd.read_excel(file, sheet_name="Indice", header=None, engine="openpyxl")
-    header = raw.iloc[1].tolist()
-    data = raw.iloc[2:].copy()
-    data.columns = header
+# --------------------------------------------------------
+# FUNZIONE PER SCARICARE IL FILE DA ONEDRIVE
+# --------------------------------------------------------
+@st.cache_data(ttl=3600)
+def load_excel_from_onedrive():
+    """Scarica e carica il file Excel dal link OneDrive (in formato download diretto)."""
+    try:
+        url = st.secrets["general"]["ONEDRIVE_URL"]
+        response = requests.get(url)
+        if response.status_code != 200:
+            raise Exception(f"Errore nel download del file (HTTP {response.status_code})")
 
-    wanted_cols = [
-        "Cliente",
-        "Ultimo Recall",
-        "Ultima Visita",
-        "Prossima Scadenza Noleggio",
-        "Tot. Contratti (aperti)",
-        "TMK",
-    ]
-    present = [c for c in wanted_cols if c in data.columns]
-    df = data[present].copy()
-    df = df.dropna(how="all")
+        file_bytes = io.BytesIO(response.content)
+        raw = pd.read_excel(file_bytes, sheet_name="Indice", header=None, engine="openpyxl")
 
-    # --- parsing robusto delle date ---
-    def _parse_date(x):
-        if pd.isna(x):
-            return ""
-        try:
-            return pd.to_datetime(str(x), dayfirst=True, errors="coerce").strftime("%d/%m/%Y")
-        except Exception:
-            return ""
-    for c in ["Ultimo Recall", "Ultima Visita", "Prossima Scadenza Noleggio"]:
-        if c in df.columns:
-            df[c] = df[c].apply(_parse_date)
+        header = raw.iloc[1].tolist()
+        data = raw.iloc[2:].copy()
+        data.columns = header
 
-    if "Tot. Contratti (aperti)" in df.columns:
-        df["Tot. Contratti (aperti)"] = pd.to_numeric(df["Tot. Contratti (aperti)"], errors="coerce")
+        wanted_cols = [
+            "Cliente",
+            "Ultimo Recall",
+            "Ultima Visita",
+            "Prossima Scadenza Noleggio",
+            "Tot. Contratti (aperti)",
+            "TMK",
+        ]
+        present = [c for c in wanted_cols if c in data.columns]
+        df = data[present].copy()
+        df = df.dropna(how="all")
 
-    if "Cliente" in df.columns:
-        df = df[df["Cliente"].notna()]
+        for c in ["Ultimo Recall", "Ultima Visita", "Prossima Scadenza Noleggio"]:
+            if c in df.columns:
+                df[c] = pd.to_datetime(df[c], errors="coerce").dt.date
 
-    return df
+        if "Tot. Contratti (aperti)" in df.columns:
+            df["Tot. Contratti (aperti)"] = pd.to_numeric(df["Tot. Contratti (aperti)"], errors="coerce")
+
+        if "Cliente" in df.columns:
+            df = df[df["Cliente"].notna()]
+
+        return df
+
+    except Exception as e:
+        st.error(f"❌ Errore nel caricamento automatico da OneDrive: {e}")
+        return None
 
 
-# ---------------------------
-# UPLOAD FILE
-# ---------------------------
-uploaded = st.file_uploader("📂 Carica il file Excel (.xlsm / .xlsx)", type=["xlsm", "xlsx"])
+# --------------------------------------------------------
+# CONTROLLO ORARIO AGGIORNAMENTO
+# --------------------------------------------------------
+def should_refresh_data():
+    """Controlla se sono passate le 12:00 di oggi: se sì, forza l’aggiornamento."""
+    now = datetime.now()
+    refresh_time = datetime.combine(date.today(), datetime.strptime("12:00", "%H:%M").time())
+    return now >= refresh_time
 
-if not uploaded:
-    st.info("⬆️ Carica il file `GESTIONE_CLIENTI.xlsm` per iniziare.")
+
+# --------------------------------------------------------
+# CARICAMENTO AUTOMATICO O MANUALE
+# --------------------------------------------------------
+st.sidebar.header("⚙️ Aggiornamento Dati")
+if st.sidebar.button("🔄 Aggiorna ora"):
+    st.cache_data.clear()
+    st.session_state["last_refresh"] = datetime.now()
+    st.toast("✅ Dati aggiornati manualmente!", icon="🔁")
+
+# Carica dati
+if "last_refresh" not in st.session_state or should_refresh_data():
+    df = load_excel_from_onedrive()
+    st.session_state["last_refresh"] = datetime.now()
+else:
+    df = load_excel_from_onedrive()
+
+if df is None or df.empty:
+    st.warning("⚠️ Non sono riuscito a caricare il file da OneDrive. Verifica il link nei secrets.")
     st.stop()
 
-try:
-    df = load_from_excel(uploaded)
-except Exception as e:
-    st.error(f"Errore nel caricamento del file: {e}")
-    st.stop()
 
-# ---------------------------
-# TAB PRINCIPALI
-# ---------------------------
-tab1, tab2 = st.tabs(["📊 Dashboard", "📇 Schede Cliente"])
+# --------------------------------------------------------
+# FILTRI
+# --------------------------------------------------------
+st.sidebar.header("🔎 Filtri")
 
-# ---------------------------
-# TAB 1 — DASHBOARD
-# ---------------------------
-with tab1:
-    st.sidebar.header("🔎 Filtri")
+query = st.sidebar.text_input("Cerca cliente (nome parziale)", "")
 
-    query = st.sidebar.text_input("Cerca cliente (nome parziale)", "")
-    tmk_values = sorted([x for x in df["TMK"].dropna().unique()]) if "TMK" in df.columns else []
-    tmk_sel = st.sidebar.multiselect("TMK", tmk_values, default=tmk_values)
-    days = st.sidebar.slider("Mostra scadenze entro (giorni)", 0, 365, 60, 15)
+tmk_values = sorted([x for x in df["TMK"].dropna().unique()]) if "TMK" in df.columns else []
+tmk_sel = st.sidebar.multiselect("TMK", tmk_values, default=tmk_values if tmk_values else None)
 
-    today = date.today()
-    deadline_limit = today + timedelta(days=days)
+days = st.sidebar.slider("Mostra scadenze entro (giorni)", min_value=0, max_value=365, value=60, step=15)
 
-    filtered = df.copy()
+today = date.today()
+deadline_limit = today + timedelta(days=days)
 
-    if query:
-        filtered = filtered[filtered["Cliente"].astype(str).str.contains(query, case=False, na=False)]
+filtered = df.copy()
 
-    if "TMK" in filtered.columns and tmk_sel:
-        filtered = filtered[filtered["TMK"].isin(tmk_sel)]
+if query:
+    filtered = filtered[filtered["Cliente"].astype(str).str.contains(query, case=False, na=False)]
 
+if "TMK" in filtered.columns and tmk_sel:
+    filtered = filtered[filtered["TMK"].isin(tmk_sel)]
+
+if "Prossima Scadenza Noleggio" in filtered.columns:
+    mask = (filtered["Prossima Scadenza Noleggio"].isna()) | (filtered["Prossima Scadenza Noleggio"] <= deadline_limit)
+    filtered = filtered[mask]
+
+
+# --------------------------------------------------------
+# KPI
+# --------------------------------------------------------
+k1, k2, k3 = st.columns(3)
+
+with k1:
+    st.metric("Clienti mostrati", len(filtered))
+
+with k2:
+    tot_aperti = filtered["Tot. Contratti (aperti)"].sum() if "Tot. Contratti (aperti)" in filtered.columns else 0
+    st.metric("Totale contratti aperti (mostrati)", int(tot_aperti) if pd.notna(tot_aperti) else 0)
+
+with k3:
     if "Prossima Scadenza Noleggio" in filtered.columns:
-        temp = pd.to_datetime(filtered["Prossima Scadenza Noleggio"], errors="coerce", dayfirst=True)
-        mask = temp.isna() | (temp <= pd.to_datetime(deadline_limit))
-        filtered = filtered[mask]
+        count_scadenze = filtered["Prossima Scadenza Noleggio"].apply(lambda d: pd.notna(d) and d <= deadline_limit).sum()
+        st.metric(f"Scadenze entro {days} giorni", int(count_scadenze))
+    else:
+        st.metric("Scadenze entro X giorni", 0)
 
-    # KPI
-    k1, k2, k3 = st.columns(3)
-    with k1:
-        st.metric("Clienti mostrati", len(filtered))
-    with k2:
-        tot_aperti = filtered["Tot. Contratti (aperti)"].sum() if "Tot. Contratti (aperti)" in filtered.columns else 0
-        st.metric("Totale contratti aperti", int(tot_aperti))
-    with k3:
-        if "Prossima Scadenza Noleggio" in filtered.columns:
-            count_scadenze = pd.to_datetime(filtered["Prossima Scadenza Noleggio"], errors="coerce", dayfirst=True)
-            count_scadenze = count_scadenze[count_scadenze <= pd.to_datetime(deadline_limit)].count()
-            st.metric(f"Scadenze entro {days} giorni", int(count_scadenze))
 
-    st.subheader("📋 Elenco Clienti (dopo i filtri)")
-    st.dataframe(filtered, use_container_width=True)
+# --------------------------------------------------------
+# TABELLA
+# --------------------------------------------------------
+st.subheader("📋 Elenco clienti (dopo i filtri)")
+st.dataframe(filtered, use_container_width=True)
 
-    csv = filtered.to_csv(index=False).encode("utf-8")
-    st.download_button("💾 Scarica come CSV", csv, "clienti_filtrati.csv", "text/csv")
+csv = filtered.to_csv(index=False).encode("utf-8")
+st.download_button("📥 Scarica come CSV", csv, file_name="clienti_filtrati.csv", mime="text/csv")
 
-    # GRAFICI
-    st.subheader("📈 Grafici")
-    chart_type = st.selectbox("Tipo di grafico", ["Clienti per TMK", "Scadenze per mese", "Distribuzione contratti"])
 
-    if chart_type == "Clienti per TMK" and "TMK" in filtered.columns:
-        st.bar_chart(filtered["TMK"].value_counts())
+# --------------------------------------------------------
+# GRAFICI
+# --------------------------------------------------------
+st.subheader("📊 Grafici")
 
-    elif chart_type == "Scadenze per mese" and "Prossima Scadenza Noleggio" in filtered.columns:
-        tmp = filtered.copy()
-        tmp = tmp.dropna(subset=["Prossima Scadenza Noleggio"])
-        if not tmp.empty:
-            tmp["Mese"] = pd.to_datetime(tmp["Prossima Scadenza Noleggio"], dayfirst=True, errors="coerce").dt.to_period("M").astype(str)
-            st.bar_chart(tmp["Mese"].value_counts().sort_index())
-        else:
-            st.info("Nessuna scadenza disponibile nei dati filtrati.")
-    elif chart_type == "Distribuzione contratti" and "Tot. Contratti (aperti)" in filtered.columns:
-        st.bar_chart(filtered["Tot. Contratti (aperti)"].fillna(0).astype(int).value_counts().sort_index())
+chart_type = st.selectbox(
+    "Scegli un grafico",
+    ["Clienti per TMK", "Scadenze per mese", "Distribuzione contratti aperti"]
+)
 
-# ---------------------------
-# TAB 2 — SCHEDE CLIENTE
-# ---------------------------
-with tab2:
-    st.subheader("📇 Schede Cliente Dettagliate")
+if chart_type == "Clienti per TMK" and "TMK" in filtered.columns:
+    st.bar_chart(filtered["TMK"].value_counts())
 
-    cliente_sel = st.selectbox("Seleziona un cliente:", df["Cliente"].unique())
+elif chart_type == "Scadenze per mese" and "Prossima Scadenza Noleggio" in filtered.columns:
+    tmp = filtered.dropna(subset=["Prossima Scadenza Noleggio"]).copy()
+    if not tmp.empty:
+        tmp["Mese"] = pd.to_datetime(tmp["Prossima Scadenza Noleggio"]).dt.to_period("M").astype(str)
+        st.bar_chart(tmp["Mese"].value_counts().sort_index())
+    else:
+        st.info("Nessuna scadenza disponibile nei dati filtrati.")
 
-    if cliente_sel:
-        try:
-            sheet = pd.read_excel(uploaded, sheet_name=str(cliente_sel), header=None, engine="openpyxl").fillna("")
+elif chart_type == "Distribuzione contratti aperti" and "Tot. Contratti (aperti)" in filtered.columns:
+    st.bar_chart(filtered["Tot. Contratti (aperti)"].fillna(0).astype(int).value_counts().sort_index())
 
-            # Rimuovi righe iniziali inutili
-            if sheet.iloc[0].astype(str).str.contains("Torna all'Indice", case=False).any():
-                sheet = sheet.iloc[1:].reset_index(drop=True)
 
-            st.markdown(f"### 📘 Scheda Cliente — **{cliente_sel}**")
-
-            # Dati cliente
-            st.markdown("#### 🧾 Dati Cliente")
-            for i, row in sheet.head(15).iterrows():
-                label = str(row[0]).strip()
-                value = str(row[1]).strip() if len(row) > 1 else ""
-                if label and value and label.lower() != "nan":
-                    st.markdown(f"**{label}:** {value}")
-
-            # Contratti
-            idx_contratti = sheet.index[
-                sheet.astype(str).apply(lambda r: r.str.contains("Contratti di Noleggio", case=False).any(), axis=1)
-            ]
-            if not idx_contratti.empty:
-                start_row = idx_contratti[0] + 1
-                contratti_raw = sheet.iloc[start_row:].reset_index(drop=True)
-                header_idx = contratti_raw.index[
-                    contratti_raw.astype(str).apply(lambda r: r.str.contains("DATA INIZIO", case=False).any(), axis=1)
-                ]
-                if not header_idx.empty:
-                    contratti_raw = contratti_raw.iloc[header_idx[0]:].reset_index(drop=True)
-
-                contratti = contratti_raw.copy()
-                contratti.columns = contratti.iloc[0]
-                contratti = contratti[1:].dropna(how="all").reset_index(drop=True)
-                contratti = contratti.loc[:, ~contratti.columns.duplicated()]
-
-                # formatta le date
-                for col in contratti.columns:
-                    if any(k in str(col).lower() for k in ["data", "inizio", "fine"]):
-                        contratti[col] = pd.to_datetime(contratti[col], errors="coerce", dayfirst=True).dt.strftime("%d/%m/%Y")
-
-                st.markdown("#### 📑 Contratti di Noleggio")
-                st.dataframe(contratti, use_container_width=True)
-
-            # Note cliente
-            idx_note = sheet.index[
-                sheet.astype(str).apply(lambda r: r.str.contains("NOTE CLIENTI", case=False).any(), axis=1)
-            ]
-            if not idx_note.empty:
-                note_text = ""
-                for i in range(idx_note[0] + 1, len(sheet)):
-                    line = " ".join(str(x) for x in sheet.iloc[i] if pd.notna(x)).strip()
-                    if line:
-                        note_text += line + "\n"
-                if note_text.strip():
-                    st.markdown("#### 🗒️ Note Cliente")
-                    st.text_area("Note", note_text, height=150)
-
-        except Exception as e:
-            st.error(f"❌ Non riesco a caricare la scheda per {cliente_sel}. Errore: {e}")
+# --------------------------------------------------------
+# INFO AGGIUNTIVE
+# --------------------------------------------------------
+st.caption(f"🕒 Ultimo aggiornamento: {st.session_state['last_refresh'].strftime('%d/%m/%Y %H:%M:%S')}")
+st.caption("💡 Il file Excel viene letto automaticamente ogni giorno alle 12:00 da OneDrive.")
