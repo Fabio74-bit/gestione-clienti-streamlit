@@ -8,7 +8,7 @@ import streamlit as st
 # ======================= Look & feel "app" =======================
 st.set_page_config(
     page_title="Gestione Clienti",
-    page_icon="icon-512.png",      # cambia in "static/icon-512.png" se la tieni in /static
+    page_icon="icon-512.png",      # se l’icona è in /static usa "static/icon-512.png"
     layout="wide"
 )
 st.markdown("""
@@ -203,6 +203,10 @@ if "view" not in st.session_state:
     st.session_state.view = "index"   # "index" | "detail"
 if "selected_cliente" not in st.session_state:
     st.session_state.selected_cliente = None
+if "notes_store" not in st.session_state:
+    st.session_state.notes_store = {}  # {cliente -> nota}
+if "info_overrides" not in st.session_state:
+    st.session_state.info_overrides = {}  # {cliente -> dict info editata}
 
 def go_index():
     st.session_state.view = "index"
@@ -233,10 +237,6 @@ names_map = {n.lower(): n for n in sheets_dict.keys()}
 indice_key = names_map.get("indice")
 indice_df = sheets_dict[indice_key] if indice_key else pd.DataFrame()
 index_table = extract_client_list_from_indice(indice_df)
-
-# Persistenza note in sessione
-if "notes_store" not in st.session_state:
-    st.session_state.notes_store = {}  # {cliente -> nota}
 
 # =============== VIEW: INDEX ===============
 if st.session_state.view == "index":
@@ -287,13 +287,36 @@ elif st.session_state.view == "detail":
     contratti_df, note_esistente = parse_contracts_and_notes(sheet_df)
     note_val = st.session_state.notes_store.get(cliente_sel, note_esistente or "")
 
+    # Applica override dei dati cliente (modifiche da maschera)
+    if cliente_sel in st.session_state.info_overrides:
+        info_cli = {**info_cli, **st.session_state.info_overrides[cliente_sel]}
+
     st.markdown(f"## 🧾 {cliente_sel}")
     if nome_cli and normalize_text(nome_cli) != normalize_text(cliente_sel):
         st.caption(f"Nome da scheda: {nome_cli}")
 
-    # Dati Cliente SOPRA
+    # ----- MASCHERA DATI CLIENTE (SOLO ANAGRAFICA) -----
+    with st.expander("✏️ Maschera Dati Cliente", expanded=False):
+        base_order = ["Indirizzo", "Città", "CAP", "TELEFONO", "MAIL", "RIF.", "RIF 2.", "IBAN", "partita iva", "SDI"]
+        extra = [k for k in info_cli.keys() if k not in base_order]
+        keys = base_order + extra
+
+        with st.form("form_info_cliente"):
+            c1, c2 = st.columns(2)
+            edited = {}
+            for i, k in enumerate(keys):
+                target = c1 if i % 2 == 0 else c2
+                with target:
+                    edited[k] = st.text_input(k, value=info_cli.get(k, ""))
+            saved = st.form_submit_button("💾 Salva Dati Cliente (sessione)")
+        if saved:
+            st.session_state.info_overrides[cliente_sel] = edited
+            info_cli = {**info_cli, **edited}
+            st.success("Dati cliente aggiornati (solo in questa sessione).")
+
+    # ----- DATI CLIENTE SOPRA -----
+    st.subheader("👤 Dati Cliente")
     if info_cli:
-        st.subheader("👤 Dati Cliente")
         ordered = ["Indirizzo", "Città", "CAP", "TELEFONO", "MAIL", "RIF.", "RIF 2.", "IBAN", "partita iva", "SDI", "Ultimo Recall", "ultima visita"]
         keys = [k for k in ordered if k in info_cli] + [k for k in info_cli.keys() if k not in ordered]
         for k in keys:
@@ -302,7 +325,7 @@ elif st.session_state.view == "detail":
     else:
         st.caption("Nessun dato anagrafico trovato.")
 
-    # Contratti SOTTO (larghi e puliti)
+    # ----- CONTRATTI SOTTO (SOLO LETTURA, LARGHI E PULITI) -----
     st.subheader("📑 Contratti di Noleggio")
     if contratti_df is not None and not contratti_df.empty:
         pretty = clean_table(contratti_df)
@@ -310,7 +333,7 @@ elif st.session_state.view == "detail":
     else:
         st.info("Nessun contratto trovato in questa scheda.")
 
-    # Note
+    # ----- NOTE -----
     st.subheader("📝 Note Cliente")
     new_note = st.text_area("Testo note", value=note_val, height=140, placeholder="Scrivi o aggiorna le note qui…")
     c1, c2 = st.columns(2)
