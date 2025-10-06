@@ -52,6 +52,19 @@ def clean_table(df: pd.DataFrame) -> pd.DataFrame:
     tmp = tmp.replace("", pd.NA).dropna(axis=0, how="all").fillna("")
     return tmp
 
+def render_kv_grid(info: Dict[str, str], cols: int = 3):
+    """Mostra l'anagrafica in orizzontale (griglia a N colonne)."""
+    if not info:
+        st.caption("Nessun dato anagrafico trovato.")
+        return
+    columns = st.columns(cols)
+    i = 0
+    for k, v in info.items():
+        with columns[i % cols]:
+            st.markdown(f"**{k}**")
+            st.write(v if str(v).strip() else "—")
+        i += 1
+
 # ======= Parser: Contratti di Noleggio + Note (pandas) =======
 def parse_contracts_and_notes(sheet_df: pd.DataFrame) -> Tuple[pd.DataFrame, str, int]:
     """
@@ -166,7 +179,6 @@ def extract_client_names_from_indice(indice_df: pd.DataFrame) -> List[str]:
         indice_df[col_cli].iloc[1:].dropna().astype(str).map(str.strip).tolist()
         if col_cli in indice_df.columns else []
     )
-    # ripulisci
     out, seen = [], set()
     for nome in names:
         if not nome or normalize_text(nome) in ("", "cliente"):
@@ -184,39 +196,27 @@ def _norm_for_sheet(s: str) -> str:
         return ""
     s = unicodedata.normalize("NFKD", str(s)).encode("ASCII", "ignore").decode("ASCII")
     s = s.lower()
-    return re.sub(r"[^a-z0-9]", "", s)  # rimuove tutto tranne lettere/numeri
+    return re.sub(r"[^a-z0-9]", "", s)
 
 def find_client_sheet_name(sheets: Dict[str, pd.DataFrame], cliente: str) -> Optional[str]:
     """Match robusto: exact -> startswith -> contains -> best score (overlap)."""
     target = _norm_for_sheet(cliente)
     if not target:
         return None
-
     names = list(sheets.keys())
     norm_map = {name: _norm_for_sheet(name) for name in names}
-
     for name, norm in norm_map.items():
-        if norm == target:
-            return name
+        if norm == target: return name
     for name, norm in norm_map.items():
-        if norm.startswith(target):
-            return name
+        if norm.startswith(target): return name
     for name, norm in norm_map.items():
-        if target in norm:
-            return name
+        if target in norm: return name
     def score(norm_name: str) -> int:
         return len(set(norm_name) & set(target))
-    best = max(names, key=lambda n: score(norm_map[n]), default=None)
-    return best
+    return max(names, key=lambda n: score(norm_map[n]), default=None)
 
 # ===== Rileva righe “rosse” tramite openpyxl =====
 def detect_red_rows(uploaded_bytes: bytes, sheet_name: str) -> Tuple[Set[int], List[str]]:
-    """
-    Restituisce:
-      - set indici 0-based delle righe contratti marcate rosse,
-      - intestazioni header.
-    Criterio: una riga è “rossa” se almeno una cella ha fill solid con fgColor che termina con 'FF0000'.
-    """
     buf = io.BytesIO(uploaded_bytes)
     wb = load_workbook(buf, data_only=True)
     if sheet_name not in wb.sheetnames:
@@ -237,9 +237,6 @@ def detect_red_rows(uploaded_bytes: bytes, sheet_name: str) -> Tuple[Set[int], L
         return set(), []
 
     header_row = title_row + 1
-    headers = [cell_text(header_row, c) for c in range(1, ws.max_column + 1)]
-    headers = [h if h else f"Col_{i-1}" for i, h in enumerate(headers, start=1)]
-
     red_rows: Set[int] = set()
     data_index = 0
     r = header_row + 1
@@ -247,13 +244,10 @@ def detect_red_rows(uploaded_bytes: bytes, sheet_name: str) -> Tuple[Set[int], L
         first = cell_text(r, 1)
         if normalize_text(first).startswith("note clienti"):
             break
-        # riga vuota?
         row_values = [cell_text(r, c) for c in range(1, ws.max_column + 1)]
         if all(v == "" for v in row_values):
             r += 1
             continue
-
-        # check fill rosso
         is_red = False
         for c in range(1, ws.max_column + 1):
             fill = ws.cell(row=r, column=c).fill
@@ -265,14 +259,11 @@ def detect_red_rows(uploaded_bytes: bytes, sheet_name: str) -> Tuple[Set[int], L
                     break
         if is_red:
             red_rows.add(data_index)
-
         data_index += 1
         r += 1
-
-    return red_rows, headers
+    return red_rows, []
 
 def style_html_table(df: pd.DataFrame, red_idx: Set[int]) -> str:
-    """Tabella HTML con background rosso chiaro per le righe marcate."""
     def esc(x):
         s = "" if x is None else str(x)
         return s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
@@ -292,21 +283,20 @@ def style_html_table(df: pd.DataFrame, red_idx: Set[int]) -> str:
 
 # ============================ STATE ============================
 if "view" not in st.session_state:
-    st.session_state.view = "Indice / Anagrafiche"   # oppure "Scheda Cliente"
+    st.session_state.view = "Indice / Anagrafiche"
 if "selected_cliente" not in st.session_state:
     st.session_state.selected_cliente = None
 if "notes_store" not in st.session_state:
-    st.session_state.notes_store = {}  # {cliente -> nota}
+    st.session_state.notes_store = {}
 if "info_overrides" not in st.session_state:
-    st.session_state.info_overrides = {}  # {cliente -> dict info editata}
+    st.session_state.info_overrides = {}
 
 # ============================ FILE UPLOAD ============================
 uploaded = st.file_uploader("📥 Carica il file Excel (.xlsx/.xlsm)", type=["xlsx", "xlsm"])
 if not uploaded:
     st.info("Carica il file per iniziare.")
     st.stop()
-
-uploaded_bytes = uploaded.getvalue()  # per openpyxl
+uploaded_bytes = uploaded.getvalue()
 
 @st.cache_data(show_spinner=False)
 def load_all_sheets(file) -> Dict[str, pd.DataFrame]:
@@ -323,11 +313,10 @@ indice_key = names_map.get("indice")
 indice_df = sheets_dict[indice_key] if indice_key else pd.DataFrame()
 client_names = extract_client_names_from_indice(indice_df)
 
-# ===== Costruisci tabella INDICE con Città da B9 di ogni scheda =====
+# ===== Costruisci tabella INDICE (mostro Città ma senza filtro) =====
 def get_city_from_sheet_df(sheet_df: pd.DataFrame) -> str:
     try:
-        # B9 -> row 9, col B -> iloc[8,1] (0-based)
-        val = sheet_df.iloc[8, 1]
+        val = sheet_df.iloc[8, 1]  # B9 -> iloc[8,1]
         if pd.isna(val):
             return ""
         s = str(val).strip()
@@ -360,25 +349,18 @@ st.session_state.view = page
 if st.session_state.view == "Indice / Anagrafiche":
     st.title("📇 Indice Clienti")
 
-    colf1, colf2, colf3 = st.columns([2,2,1])
+    colf1, colf2 = st.columns([3,1])
     with colf1:
         q_name = st.text_input("🔎 Cerca per nome", value="", placeholder="es. Rossi, OCEANICA…")
     with colf2:
-        q_city = st.text_input("🏙️ Cerca per città", value="", placeholder="es. Milano, Casarile…")
-    with colf3:
         st.write(""); st.write("")
-        if st.button("🔄 Pulisci filtri"):
+        if st.button("🔄 Pulisci filtro"):
             st.rerun()
 
     filt = index_table.copy()
     if q_name:
         qn = normalize_text(q_name)
         filt = filt[filt["Nome"].fillna("").astype(str).map(lambda x: qn in normalize_text(x))]
-    if q_city:
-        qc = normalize_text(q_city)
-        if "Città" not in filt.columns:
-            filt["Città"] = ""
-        filt = filt[filt["Città"].fillna("").astype(str).map(lambda x: qc in normalize_text(x))]
 
     st.caption(f"{len(filt)} clienti trovati")
     st.dataframe(filt, use_container_width=True, hide_index=True)
@@ -414,7 +396,7 @@ if st.session_state.view == "Scheda Cliente":
 
     sheet_df = sheets_dict[foglio]
     nome_cli, info_cli = parse_client_info(sheet_df)
-    contratti_df, note_esistente, header_hint = parse_contracts_and_notes(sheet_df)
+    contratti_df, note_esistente, _ = parse_contracts_and_notes(sheet_df)
     note_val = st.session_state.notes_store.get(cliente_sel, note_esistente or "")
 
     if cliente_sel in st.session_state.info_overrides:
@@ -424,16 +406,14 @@ if st.session_state.view == "Scheda Cliente":
     if nome_cli and normalize_text(nome_cli) != normalize_text(cliente_sel):
         st.caption(f"Nome da scheda: {nome_cli}")
 
-    # ---------- Linguette ----------
     tab_ana, tab_ctr = st.tabs(["👤 Anagrafica", "📑 Contratti"])
 
-    # TAB: ANAGRAFICA
+    # TAB: ANAGRAFICA (orizzontale)
     with tab_ana:
         with st.expander("✏️ Maschera Dati Cliente", expanded=False):
             base_order = ["Indirizzo", "Città", "CAP", "TELEFONO", "MAIL", "RIF.", "RIF 2.", "IBAN", "partita iva", "SDI"]
             extra = [k for k in info_cli.keys() if k not in base_order]
             keys = base_order + extra
-
             with st.form("form_info_cliente"):
                 c1, c2 = st.columns(2)
                 edited = {}
@@ -448,17 +428,16 @@ if st.session_state.view == "Scheda Cliente":
                 st.success("Dati cliente aggiornati (solo in questa sessione).")
 
         st.subheader("👤 Dati Cliente")
-        if info_cli:
-            ordered = ["Indirizzo", "Città", "CAP", "TELEFONO", "MAIL", "RIF.", "RIF 2.", "IBAN", "partita iva", "SDI", "Ultimo Recall", "ultima visita"]
-            keys = [k for k in ordered if k in info_cli] + [k for k in info_cli.keys() if k not in ordered]
-            for k in keys:
-                st.markdown(f"**{k}**")
-                st.write(info_cli[k])
-        else:
-            st.caption("Nessun dato anagrafico trovato.")
+        # ordine consigliato, poi gli altri — resa in griglia orizzontale
+        ordered = ["Indirizzo", "Città", "CAP", "TELEFONO", "MAIL", "RIF.", "RIF 2.", "IBAN", "partita iva", "SDI", "Ultimo Recall", "ultima visita"]
+        info_ordered = {k: info_cli[k] for k in ordered if k in info_cli}
+        for k in info_cli.keys():
+            if k not in info_ordered:
+                info_ordered[k] = info_cli[k]
+        render_kv_grid(info_ordered, cols=3)
 
         st.subheader("📝 Note Cliente")
-        new_note = st.text_area("Testo note", value=note_val, height=140, placeholder="Scrivi o aggiorna le note qui…")
+        new_note = st.text_area("Testo note", value=note_val, height=120, placeholder="Scrivi o aggiorna le note qui…")
         c1, c2 = st.columns(2)
         with c1:
             if st.button("💾 Salva nota (solo in questa sessione)"):
@@ -468,7 +447,7 @@ if st.session_state.view == "Scheda Cliente":
             notes_json = json.dumps(st.session_state.notes_store, ensure_ascii=False, indent=2)
             st.download_button("⬇️ Esporta tutte le note (JSON)", data=notes_json, file_name="note_clienti.json", mime="application/json")
 
-    # TAB: CONTRATTI
+    # TAB: CONTRATTI (righe rosse sempre colorate)
     with tab_ctr:
         st.subheader("📑 Contratti di Noleggio")
         try:
