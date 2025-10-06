@@ -44,17 +44,12 @@ def clean_table(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
     tmp = df.copy()
-    # stringifica e ripulisci "None"
     tmp = tmp.astype(object).where(~tmp.isna(), None)
     tmp = tmp.applymap(lambda x: "" if (x is None or str(x).strip().lower() == "none") else x)
-
-    # elimina colonne tutte vuote
-    tmp = tmp.dropna(axis=1, how="all").replace("", pd.NA)
-    tmp = tmp.dropna(axis=1, how="all").fillna("")
-
-    # elimina righe tutte vuote
-    tmp = tmp.replace("", pd.NA)
-    tmp = tmp.dropna(axis=0, how="all").fillna("")
+    # drop colonne vuote
+    tmp = tmp.replace("", pd.NA).dropna(axis=1, how="all").fillna("")
+    # drop righe vuote
+    tmp = tmp.replace("", pd.NA).dropna(axis=0, how="all").fillna("")
     return tmp
 
 # ======= Parser: Contratti di Noleggio + Note (da foglio cliente) =======
@@ -82,13 +77,12 @@ def parse_contracts_and_notes(sheet_df: pd.DataFrame) -> Tuple[pd.DataFrame, str
             row0 = str(df.iloc[r, 0]).strip() if pd.notna(df.iloc[r, 0]) else ""
             if normalize_text(row0).startswith("note clienti"):
                 break
-            # riga completamente vuota?
             if all((str(x).strip() == "" or str(x).strip().lower() == "none") for x in df.iloc[r].tolist()):
                 continue
             rows.append([None if str(x).strip().lower() == "none" else x for x in df.iloc[r].tolist()])
         if rows:
             contratti_df = pd.DataFrame(rows, columns=headers)
-            # parse date: colonne con "data" nel nome
+            # parse date
             for c in list(contratti_df.columns):
                 if "data" in normalize_text(c):
                     contratti_df[c] = pd.to_datetime(contratti_df[c], errors="coerce", dayfirst=True)
@@ -102,9 +96,8 @@ def parse_contracts_and_notes(sheet_df: pd.DataFrame) -> Tuple[pd.DataFrame, str
                 note_text = get_first_nonempty([df.at[rr, c] for c in df.columns])
             break
 
-    # pulizia tabella
+    # pulizia contratti
     if not contratti_df.empty:
-        # format date -> dd/mm/yy
         for c in contratti_df.columns:
             if pd.api.types.is_datetime64_any_dtype(contratti_df[c]):
                 contratti_df[c] = contratti_df[c].dt.strftime("%d/%m/%y")
@@ -132,48 +125,34 @@ def parse_client_info(sheet_df: pd.DataFrame) -> Tuple[str, Dict[str, str]]:
     # nome cliente
     nome = ""
     for idx, key in first_col.items():
-        if idx >= stop_at:
-            break
+        if idx >= stop_at: break
         nk = normalize_text(key)
         if nk in ("nome cliente", "cliente"):
             nome = get_first_nonempty([df.at[idx, c] for c in df.columns[1:]])
-            if nome:
-                break
+            if nome: break
 
     # chiave -> valore
     info: Dict[str, str] = {}
     SKIP = {"scheda cliente", "torna all indice", "totale contratti", "dati cliente", "cliente", "nome cliente"}
     for idx, key in first_col.items():
-        if idx >= stop_at:
-            break
+        if idx >= stop_at: break
         k_raw = str(key).strip()
-        if not k_raw:
-            continue
-        if normalize_text(k_raw) in SKIP:
-            continue
+        if not k_raw: continue
+        if normalize_text(k_raw) in SKIP: continue
         v = get_first_nonempty([df.at[idx, c] for c in df.columns[1:]])
         if v:
-            info[k_raw] = v
+            vv = "" if str(v).strip().lower() == "none" else str(v).strip()
+            if vv:
+                info[k_raw] = vv
 
-    # pulizia
-    clean_info = {}
-    for k, v in info.items():
-        vv = "" if str(v).strip().lower() == "none" else str(v).strip()
-        if vv:
-            clean_info[k] = vv
-
-    return nome, clean_info
+    return nome, info
 
 # ===== Indice: elenco dall'Indice + filtri per nome e città =====
 def extract_client_list_from_indice(indice_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Ritorna un DataFrame pulito con colonne: Nome, Città (se presente), Telefono (se presente).
-    Cerca la colonna "Cliente" in riga 0, e prova a inferire "Città"/"TELEFONO".
-    """
+    """Ritorna DataFrame con colonne: Nome, Città (se presente), Telefono (se presente)."""
     if indice_df is None or indice_df.empty:
         return pd.DataFrame(columns=["Nome", "Città", "Telefono"])
 
-    # Trova colonna clienti (riga 0 contiene "Cliente")
     header_row0 = indice_df.iloc[0].to_dict()
     col_cli = None
     for c, v in header_row0.items():
@@ -181,69 +160,42 @@ def extract_client_list_from_indice(indice_df: pd.DataFrame) -> pd.DataFrame:
             col_cli = c
             break
     if col_cli is None:
-        # fallback: prima colonna non vuota
         candidates = [c for c in indice_df.columns if indice_df[c].notna().any()]
         col_cli = candidates[0] if candidates else indice_df.columns[0]
 
-    # Trova colonne possibili per città/telefono (cerca per nome)
     col_citta = None
     col_tel = None
     for c in indice_df.columns:
         v0 = str(indice_df.at[0, c]) if 0 in indice_df.index else ""
         nk = normalize_text(v0)
-        if not col_citta and ("citta" in nk or "citt" in nk):
-            col_citta = c
-        if not col_tel and ("telefono" in nk or "tel" in nk):
-            col_tel = c
+        if not col_citta and ("citta" in nk or "citt" in nk): col_citta = c
+        if not col_tel and ("telefono" in nk or "tel" in nk): col_tel = c
 
-    # Estrai righe (salta la riga 0)
-    names = (
-        indice_df[col_cli].iloc[1:].dropna().astype(str).map(str.strip).tolist()
-        if col_cli in indice_df.columns else []
-    )
-    cities = (
-        indice_df[col_citta].iloc[1:].astype(str).map(str.strip).tolist()
-        if col_citta and col_citta in indice_df.columns else []
-    )
-    tels = (
-        indice_df[col_tel].iloc[1:].astype(str).map(str.strip).tolist()
-        if col_tel and col_tel in indice_df.columns else []
-    )
+    names = indice_df[col_cli].iloc[1:].dropna().astype(str).map(str.strip).tolist() if col_cli in indice_df.columns else []
+    cities = indice_df[col_citta].iloc[1:].astype(str).map(str.strip).tolist() if col_citta and col_citta in indice_df.columns else []
+    tels = indice_df[col_tel].iloc[1:].astype(str).map(str.strip).tolist() if col_tel and col_tel in indice_df.columns else []
 
-    # allinea lunghezze
     maxlen = max(len(names), len(cities), len(tels), 0)
     def safe(lst, i): return lst[i] if i < len(lst) else ""
-    rows = []
-    seen = set()
+    rows, seen = [], set()
     for i in range(maxlen):
         nome = safe(names, i)
-        if not nome or normalize_text(nome) in ("", "cliente"):
-            continue
+        if not nome or normalize_text(nome) in ("", "cliente"): continue
         key = normalize_text(nome)
-        if key in seen:
-            continue
+        if key in seen: continue
         seen.add(key)
-        rows.append({
-            "Nome": nome,
-            "Città": safe(cities, i),
-            "Telefono": safe(tels, i),
-        })
-    out = pd.DataFrame(rows, columns=["Nome", "Città", "Telefono"])
-    # pulizia None/blank
-    out = out.fillna("")
+        rows.append({"Nome": nome, "Città": safe(cities, i), "Telefono": safe(tels, i)})
+    out = pd.DataFrame(rows, columns=["Nome", "Città", "Telefono"]).fillna("")
     return out
 
 def find_client_sheet_name(sheets: Dict[str, pd.DataFrame], cliente: str) -> Optional[str]:
     target = normalize_text(cliente)
     for name in sheets.keys():
-        if normalize_text(name) == target:
-            return name
+        if normalize_text(name) == target: return name
     for name in sheets.keys():
-        if normalize_text(name).startswith(target):
-            return name
+        if normalize_text(name).startswith(target): return name
     for name in sheets.keys():
-        if target in normalize_text(name):
-            return name
+        if target in normalize_text(name): return name
     return None
 
 # ============================ STATE & NAV ============================
@@ -282,7 +234,7 @@ indice_key = names_map.get("indice")
 indice_df = sheets_dict[indice_key] if indice_key else pd.DataFrame()
 index_table = extract_client_list_from_indice(indice_df)
 
-# Persistenza note (semplice, in sessione)
+# Persistenza note in sessione
 if "notes_store" not in st.session_state:
     st.session_state.notes_store = {}  # {cliente -> nota}
 
@@ -290,19 +242,16 @@ if "notes_store" not in st.session_state:
 if st.session_state.view == "index":
     st.title("📇 Indice Clienti")
 
-    # Filtri: Nome + Città
     colf1, colf2, colf3 = st.columns([2,2,1])
     with colf1:
         q_name = st.text_input("🔎 Cerca per nome", value="", placeholder="es. Rossi, 2 ESSE…")
     with colf2:
         q_city = st.text_input("🏙️ Cerca per città", value="", placeholder="es. Milano, Casarile…")
     with colf3:
-        st.write("")
-        st.write("")
+        st.write(""); st.write("")
         if st.button("🔄 Pulisci filtri"):
-            q_name = ""
-            q_city = ""
-            st.experimental_rerun()
+            q_name = ""; q_city = ""
+            st.rerun()
 
     filt = index_table.copy()
     if q_name:
@@ -313,14 +262,13 @@ if st.session_state.view == "index":
     st.caption(f"{len(filt)} clienti trovati")
     st.dataframe(filt, use_container_width=True, hide_index=True)
 
-    # Selettore per andare alla scheda
     choices: List[str] = ["-- Seleziona --"] + filt["Nome"].tolist()
     pick = st.selectbox("Apri scheda cliente", choices)
     if pick and pick != "-- Seleziona --":
         go_detail(pick)
-        st.experimental_rerun()
+        st.rerun()
 
-# =============== VIEW: DETAIL (Scheda Cliente) ===============
+# =============== VIEW: DETAIL ===============
 elif st.session_state.view == "detail":
     cliente_sel: Optional[str] = st.session_state.selected_cliente
     st.button("← Torna all’Indice", on_click=go_index)
@@ -343,10 +291,9 @@ elif st.session_state.view == "detail":
     if nome_cli and normalize_text(nome_cli) != normalize_text(cliente_sel):
         st.caption(f"Nome da scheda: {nome_cli}")
 
-    # --- Dati Cliente SOPRA ---
+    # Dati Cliente SOPRA
     if info_cli:
         st.subheader("👤 Dati Cliente")
-        # ordine consigliato
         ordered = ["Indirizzo", "Città", "CAP", "TELEFONO", "MAIL", "RIF.", "RIF 2.", "IBAN", "partita iva", "SDI", "Ultimo Recall", "ultima visita"]
         keys = [k for k in ordered if k in info_cli] + [k for k in info_cli.keys() if k not in ordered]
         for k in keys:
@@ -355,7 +302,7 @@ elif st.session_state.view == "detail":
     else:
         st.caption("Nessun dato anagrafico trovato.")
 
-    # --- Contratti SOTTO (larghi e puliti) ---
+    # Contratti SOTTO (larghi e puliti)
     st.subheader("📑 Contratti di Noleggio")
     if contratti_df is not None and not contratti_df.empty:
         pretty = clean_table(contratti_df)
@@ -363,7 +310,7 @@ elif st.session_state.view == "detail":
     else:
         st.info("Nessun contratto trovato in questa scheda.")
 
-    # --- Note (in fondo) ---
+    # Note
     st.subheader("📝 Note Cliente")
     new_note = st.text_area("Testo note", value=note_val, height=140, placeholder="Scrivi o aggiorna le note qui…")
     c1, c2 = st.columns(2)
