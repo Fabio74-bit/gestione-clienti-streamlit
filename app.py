@@ -1,6 +1,6 @@
 import re
-import json
 import io
+import json
 import unicodedata
 from typing import Tuple, Optional, Dict, List, Set
 import pandas as pd
@@ -10,7 +10,7 @@ from openpyxl import load_workbook
 # ======================= Look & feel "app" =======================
 st.set_page_config(
     page_title="Gestione Clienti",
-    page_icon="icon-512.png",      # cambia in "static/icon-512.png" se usi /static
+    page_icon="icon-512.png",      # se usi /static: "static/icon-512.png"
     layout="wide"
 )
 st.markdown("""
@@ -48,17 +48,15 @@ def clean_table(df: pd.DataFrame) -> pd.DataFrame:
     tmp = df.copy()
     tmp = tmp.astype(object).where(~tmp.isna(), None)
     tmp = tmp.applymap(lambda x: "" if (x is None or str(x).strip().lower() == "none") else x)
-    # drop colonne vuote
     tmp = tmp.replace("", pd.NA).dropna(axis=1, how="all").fillna("")
-    # drop righe vuote
     tmp = tmp.replace("", pd.NA).dropna(axis=0, how="all").fillna("")
     return tmp
 
 # ======= Parser: Contratti di Noleggio + Note (pandas) =======
 def parse_contracts_and_notes(sheet_df: pd.DataFrame) -> Tuple[pd.DataFrame, str, int]:
     """
-    Ritorna (contratti_df, note_text, header_row_openpyxl_hint)
-    - header_row_openpyxl_hint: indice 0-based della riga header in pandas (serve per allineamento con openpyxl).
+    Ritorna (contratti_df, note_text, header_row_hint)
+    - header_row_hint: indice 0-based della riga header in pandas (per allineamenti).
     """
     df = sheet_df.copy()
     df = df.dropna(axis=1, how="all")
@@ -70,7 +68,7 @@ def parse_contracts_and_notes(sheet_df: pd.DataFrame) -> Tuple[pd.DataFrame, str
     header_row = None
     for idx, key in first_col.items():
         if normalize_text(key).startswith("contratti di noleggio"):
-            header_row = idx + 1  # riga header (con le etichette)
+            header_row = idx + 1
             break
 
     contratti_df = pd.DataFrame()
@@ -82,17 +80,15 @@ def parse_contracts_and_notes(sheet_df: pd.DataFrame) -> Tuple[pd.DataFrame, str
             row0 = str(df.iloc[r, 0]).strip() if pd.notna(df.iloc[r, 0]) else ""
             if normalize_text(row0).startswith("note clienti"):
                 break
-            # riga non tutta vuota?
-            if not all((str(x).strip() == "" or str(x).strip().lower() == "none") for x in df.iloc[r].tolist()):
-                rows.append([None if str(x).strip().lower() == "none" else x for x in df.iloc[r].tolist()])
+            if all((str(x).strip() == "" or str(x).strip().lower() == "none") for x in df.iloc[r].tolist()):
+                continue
+            rows.append([None if str(x).strip().lower() == "none" else x for x in df.iloc[r].tolist()])
         if rows:
             contratti_df = pd.DataFrame(rows, columns=headers)
-            # parse date (nomi colonne contenenti "data")
             for c in list(contratti_df.columns):
                 if "data" in normalize_text(c):
                     contratti_df[c] = pd.to_datetime(contratti_df[c], errors="coerce", dayfirst=True)
 
-    # NOTE CLIENTI
     note_text = ""
     for idx, key in first_col.items():
         if normalize_text(key).startswith("note clienti"):
@@ -101,7 +97,6 @@ def parse_contracts_and_notes(sheet_df: pd.DataFrame) -> Tuple[pd.DataFrame, str
                 note_text = get_first_nonempty([df.at[rr, c] for c in df.columns])
             break
 
-    # pulizia + format date → dd/mm/yy
     if not contratti_df.empty:
         for c in contratti_df.columns:
             if pd.api.types.is_datetime64_any_dtype(contratti_df[c]):
@@ -119,7 +114,6 @@ def parse_client_info(sheet_df: pd.DataFrame) -> Tuple[str, Dict[str, str]]:
     col0 = df.columns[0]
     first_col = df[col0].apply(lambda x: str(x).strip() if x is not None else "")
 
-    # righe di stop
     stop_rows = []
     for idx, key in first_col.items():
         nk = normalize_text(key)
@@ -127,7 +121,6 @@ def parse_client_info(sheet_df: pd.DataFrame) -> Tuple[str, Dict[str, str]]:
             stop_rows.append(idx)
     stop_at = min(stop_rows) if stop_rows else len(df)
 
-    # nome cliente
     nome = ""
     for idx, key in first_col.items():
         if idx >= stop_at:
@@ -138,7 +131,6 @@ def parse_client_info(sheet_df: pd.DataFrame) -> Tuple[str, Dict[str, str]]:
             if nome:
                 break
 
-    # chiave -> valore
     info: Dict[str, str] = {}
     SKIP = {"scheda cliente", "torna all indice", "totale contratti", "dati cliente", "cliente", "nome cliente"}
     for idx, key in first_col.items():
@@ -157,12 +149,10 @@ def parse_client_info(sheet_df: pd.DataFrame) -> Tuple[str, Dict[str, str]]:
 
     return nome, info
 
-# ===== Indice: elenco dall'Indice + filtri per nome e città =====
-def extract_client_list_from_indice(indice_df: pd.DataFrame) -> pd.DataFrame:
-    """Ritorna DataFrame con colonne: Nome, Città (se presente), Telefono (se presente)."""
+# =============== Nomi clienti dall'Indice (senza città) ===============
+def extract_client_names_from_indice(indice_df: pd.DataFrame) -> List[str]:
     if indice_df is None or indice_df.empty:
-        return pd.DataFrame(columns=["Nome", "Città", "Telefono"])
-
+        return []
     header_row0 = indice_df.iloc[0].to_dict()
     col_cli = None
     for c, v in header_row0.items():
@@ -172,53 +162,60 @@ def extract_client_list_from_indice(indice_df: pd.DataFrame) -> pd.DataFrame:
     if col_cli is None:
         candidates = [c for c in indice_df.columns if indice_df[c].notna().any()]
         col_cli = candidates[0] if candidates else indice_df.columns[0]
-
-    col_citta = None
-    col_tel = None
-    for c in indice_df.columns:
-        v0 = str(indice_df.at[0, c]) if 0 in indice_df.index else ""
-        nk = normalize_text(v0)
-        if not col_citta and ("citta" in nk or "citt" in nk): col_citta = c
-        if not col_tel and ("telefono" in nk or "tel" in nk): col_tel = c
-
-    names = indice_df[col_cli].iloc[1:].dropna().astype(str).map(str.strip).tolist() if col_cli in indice_df.columns else []
-    cities = indice_df[col_citta].iloc[1:].astype(str).map(str.strip).tolist() if col_citta and col_citta in indice_df.columns else []
-    tels = indice_df[col_tel].iloc[1:].astype(str).map(str.strip).tolist() if col_tel and col_tel in indice_df.columns else []
-
-    maxlen = max(len(names), len(cities), len(tels), 0)
-    def safe(lst, i): return lst[i] if i < len(lst) else ""
-    rows, seen = [], set()
-    for i in range(maxlen):
-        nome = safe(names, i)
-        if not nome or normalize_text(nome) in ("", "cliente"): continue
+    names = (
+        indice_df[col_cli].iloc[1:].dropna().astype(str).map(str.strip).tolist()
+        if col_cli in indice_df.columns else []
+    )
+    # ripulisci
+    out, seen = [], set()
+    for nome in names:
+        if not nome or normalize_text(nome) in ("", "cliente"):
+            continue
         key = normalize_text(nome)
-        if key in seen: continue
+        if key in seen:
+            continue
         seen.add(key)
-        rows.append({"Nome": nome, "Città": safe(cities, i), "Telefono": safe(tels, i)})
-    out = pd.DataFrame(rows, columns=["Nome", "Città", "Telefono"]).fillna("")
+        out.append(nome)
     return out
 
+# =============== Match foglio robusto (trova “OCEANICA”) ===============
+def _norm_for_sheet(s: str) -> str:
+    if s is None:
+        return ""
+    s = unicodedata.normalize("NFKD", str(s)).encode("ASCII", "ignore").decode("ASCII")
+    s = s.lower()
+    return re.sub(r"[^a-z0-9]", "", s)  # rimuove tutto tranne lettere/numeri
+
 def find_client_sheet_name(sheets: Dict[str, pd.DataFrame], cliente: str) -> Optional[str]:
-    target = normalize_text(cliente)
-    for name in sheets.keys():
-        if normalize_text(name) == target: return name
-    for name in sheets.keys():
-        if normalize_text(name).startswith(target): return name
-    for name in sheets.keys():
-        if target in normalize_text(name): return name
-    return None
+    """Match robusto: exact -> startswith -> contains -> best score (overlap)."""
+    target = _norm_for_sheet(cliente)
+    if not target:
+        return None
+
+    names = list(sheets.keys())
+    norm_map = {name: _norm_for_sheet(name) for name in names}
+
+    for name, norm in norm_map.items():
+        if norm == target:
+            return name
+    for name, norm in norm_map.items():
+        if norm.startswith(target):
+            return name
+    for name, norm in norm_map.items():
+        if target in norm:
+            return name
+    def score(norm_name: str) -> int:
+        return len(set(norm_name) & set(target))
+    best = max(names, key=lambda n: score(norm_map[n]), default=None)
+    return best
 
 # ===== Rileva righe “rosse” tramite openpyxl =====
 def detect_red_rows(uploaded_bytes: bytes, sheet_name: str) -> Tuple[Set[int], List[str]]:
     """
     Restituisce:
-      - set di indici 0-based delle righe dati dei contratti con evidenza rossa,
-      - intestazioni lette dalla riga header.
-    Logica:
-      - cerca "Contratti di Noleggio" nella prima colonna,
-      - header = riga successiva,
-      - dati = righe successive fino a "NOTE CLIENTI" o riga vuota,
-      - una riga è "rossa" se almeno una cella ha fill rosso (rgb che finisce con 'FF0000').
+      - set indici 0-based delle righe contratti marcate rosse,
+      - intestazioni header.
+    Criterio: una riga è “rossa” se almeno una cella ha fill solid con fgColor che termina con 'FF0000'.
     """
     buf = io.BytesIO(uploaded_bytes)
     wb = load_workbook(buf, data_only=True)
@@ -230,7 +227,6 @@ def detect_red_rows(uploaded_bytes: bytes, sheet_name: str) -> Tuple[Set[int], L
         v = ws.cell(row=r, column=c).value
         return str(v).strip() if v is not None else ""
 
-    # trova riga titolo
     title_row = None
     for r in range(1, ws.max_row + 1):
         val = cell_text(r, 1)
@@ -245,16 +241,15 @@ def detect_red_rows(uploaded_bytes: bytes, sheet_name: str) -> Tuple[Set[int], L
     headers = [h if h else f"Col_{i-1}" for i, h in enumerate(headers, start=1)]
 
     red_rows: Set[int] = set()
-    data_index = 0  # indice 0-based sui dati (allineato al DataFrame dei contratti)
+    data_index = 0
     r = header_row + 1
     while r <= ws.max_row:
         first = cell_text(r, 1)
         if normalize_text(first).startswith("note clienti"):
             break
-        # riga completamente vuota?
+        # riga vuota?
         row_values = [cell_text(r, c) for c in range(1, ws.max_column + 1)]
         if all(v == "" for v in row_values):
-            # salta vuote, ma NON interrompe (alcuni file hanno righe vuote intermedie)
             r += 1
             continue
 
@@ -277,18 +272,15 @@ def detect_red_rows(uploaded_bytes: bytes, sheet_name: str) -> Tuple[Set[int], L
     return red_rows, headers
 
 def style_html_table(df: pd.DataFrame, red_idx: Set[int]) -> str:
-    """Rende una tabella HTML con background rosso chiaro sulle righe marcate."""
-    # escape semplice
-    def esc(x): 
+    """Tabella HTML con background rosso chiaro per le righe marcate."""
+    def esc(x):
         s = "" if x is None else str(x)
         return s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
-    # header
     html = ['<div style="overflow:auto;"><table style="border-collapse:collapse;width:100%;">']
     html.append("<thead><tr>")
     for c in df.columns:
         html.append(f'<th style="text-align:left;border-bottom:1px solid #ddd;padding:6px;">{esc(c)}</th>')
     html.append("</tr></thead><tbody>")
-    # rows
     for i, (_, row) in enumerate(df.iterrows()):
         bg = "background-color:#ffe5e5;" if i in red_idx else ""
         html.append(f'<tr style="{bg}">')
@@ -314,7 +306,7 @@ if not uploaded:
     st.info("Carica il file per iniziare.")
     st.stop()
 
-uploaded_bytes = uploaded.getvalue()  # serve per openpyxl
+uploaded_bytes = uploaded.getvalue()  # per openpyxl
 
 @st.cache_data(show_spinner=False)
 def load_all_sheets(file) -> Dict[str, pd.DataFrame]:
@@ -325,11 +317,35 @@ if not sheets_dict:
     st.error("Nessun foglio trovato nel file.")
     st.stop()
 
-# Trova "Indice"
+# Trova "Indice" (solo per lista nomi)
 names_map = {n.lower(): n for n in sheets_dict.keys()}
 indice_key = names_map.get("indice")
 indice_df = sheets_dict[indice_key] if indice_key else pd.DataFrame()
-index_table = extract_client_list_from_indice(indice_df)
+client_names = extract_client_names_from_indice(indice_df)
+
+# ===== Costruisci tabella INDICE con Città da B9 di ogni scheda =====
+def get_city_from_sheet_df(sheet_df: pd.DataFrame) -> str:
+    try:
+        # B9 -> row 9, col B -> iloc[8,1] (0-based)
+        val = sheet_df.iloc[8, 1]
+        if pd.isna(val):
+            return ""
+        s = str(val).strip()
+        return "" if s.lower() == "none" else s
+    except Exception:
+        return ""
+
+def build_index_table_from_sheets(sheets_dict: Dict[str, pd.DataFrame], names: List[str]) -> pd.DataFrame:
+    rows = []
+    for nome in names:
+        sheet_name = find_client_sheet_name(sheets_dict, nome)
+        citta = ""
+        if sheet_name and sheet_name in sheets_dict:
+            citta = get_city_from_sheet_df(sheets_dict[sheet_name])
+        rows.append({"Nome": nome, "Città": citta, "Telefono": ""})
+    return pd.DataFrame(rows, columns=["Nome", "Città", "Telefono"]).fillna("")
+
+index_table = build_index_table_from_sheets(sheets_dict, client_names)
 
 # ============================ NAV ============================
 st.sidebar.title("Navigazione")
@@ -346,7 +362,7 @@ if st.session_state.view == "Indice / Anagrafiche":
 
     colf1, colf2, colf3 = st.columns([2,2,1])
     with colf1:
-        q_name = st.text_input("🔎 Cerca per nome", value="", placeholder="es. Rossi, 2 ESSE…")
+        q_name = st.text_input("🔎 Cerca per nome", value="", placeholder="es. Rossi, OCEANICA…")
     with colf2:
         q_city = st.text_input("🏙️ Cerca per città", value="", placeholder="es. Milano, Casarile…")
     with colf3:
@@ -356,9 +372,13 @@ if st.session_state.view == "Indice / Anagrafiche":
 
     filt = index_table.copy()
     if q_name:
-        filt = filt[filt["Nome"].astype(str).map(lambda x: normalize_text(q_name) in normalize_text(x))]
+        qn = normalize_text(q_name)
+        filt = filt[filt["Nome"].fillna("").astype(str).map(lambda x: qn in normalize_text(x))]
     if q_city:
-        filt = filt[filt["Città"].astype(str).map(lambda x: normalize_text(q_city) in normalize_text(x))]
+        qc = normalize_text(q_city)
+        if "Città" not in filt.columns:
+            filt["Città"] = ""
+        filt = filt[filt["Città"].fillna("").astype(str).map(lambda x: qc in normalize_text(x))]
 
     st.caption(f"{len(filt)} clienti trovati")
     st.dataframe(filt, use_container_width=True, hide_index=True)
@@ -373,11 +393,13 @@ if st.session_state.view == "Indice / Anagrafiche":
 # ============================ PAGINA: SCHEDA ============================
 if st.session_state.view == "Scheda Cliente":
     st.title("🧾 Scheda Cliente")
-    st.button("← Torna all’Indice", on_click=lambda: (st.session_state.update({"view":"Indice / Anagrafiche","selected_cliente":None}), st.rerun()))
+    if st.button("← Torna all’Indice"):
+        st.session_state.view = "Indice / Anagrafiche"
+        st.session_state.selected_cliente = None
+        st.rerun()
 
     cliente_sel: Optional[str] = st.session_state.selected_cliente
     if not cliente_sel:
-        # permetti scelta rapida se si entra direttamente
         choices: List[str] = ["-- Seleziona --"] + index_table["Nome"].tolist()
         pick = st.selectbox("Seleziona cliente", choices)
         if pick and pick != "-- Seleziona --":
@@ -395,7 +417,6 @@ if st.session_state.view == "Scheda Cliente":
     contratti_df, note_esistente, header_hint = parse_contracts_and_notes(sheet_df)
     note_val = st.session_state.notes_store.get(cliente_sel, note_esistente or "")
 
-    # Applica override dei dati cliente (modifiche da maschera)
     if cliente_sel in st.session_state.info_overrides:
         info_cli = {**info_cli, **st.session_state.info_overrides[cliente_sel]}
 
@@ -403,67 +424,68 @@ if st.session_state.view == "Scheda Cliente":
     if nome_cli and normalize_text(nome_cli) != normalize_text(cliente_sel):
         st.caption(f"Nome da scheda: {nome_cli}")
 
-    # ----- MASCHERA DATI CLIENTE (solo anagrafica) -----
-    with st.expander("✏️ Maschera Dati Cliente", expanded=False):
-        base_order = ["Indirizzo", "Città", "CAP", "TELEFONO", "MAIL", "RIF.", "RIF 2.", "IBAN", "partita iva", "SDI"]
-        extra = [k for k in info_cli.keys() if k not in base_order]
-        keys = base_order + extra
+    # ---------- Linguette ----------
+    tab_ana, tab_ctr = st.tabs(["👤 Anagrafica", "📑 Contratti"])
 
-        with st.form("form_info_cliente"):
-            c1, c2 = st.columns(2)
-            edited = {}
-            for i, k in enumerate(keys):
-                target = c1 if i % 2 == 0 else c2
-                with target:
-                    edited[k] = st.text_input(k, value=info_cli.get(k, ""))
-            saved = st.form_submit_button("💾 Salva Dati Cliente (sessione)")
-        if saved:
-            st.session_state.info_overrides[cliente_sel] = edited
-            info_cli = {**info_cli, **edited}
-            st.success("Dati cliente aggiornati (solo in questa sessione).")
+    # TAB: ANAGRAFICA
+    with tab_ana:
+        with st.expander("✏️ Maschera Dati Cliente", expanded=False):
+            base_order = ["Indirizzo", "Città", "CAP", "TELEFONO", "MAIL", "RIF.", "RIF 2.", "IBAN", "partita iva", "SDI"]
+            extra = [k for k in info_cli.keys() if k not in base_order]
+            keys = base_order + extra
 
-    # ----- DATI CLIENTE SOPRA -----
-    st.subheader("👤 Dati Cliente")
-    if info_cli:
-        ordered = ["Indirizzo", "Città", "CAP", "TELEFONO", "MAIL", "RIF.", "RIF 2.", "IBAN", "partita iva", "SDI", "Ultimo Recall", "ultima visita"]
-        keys = [k for k in ordered if k in info_cli] + [k for k in info_cli.keys() if k not in ordered]
-        for k in keys:
-            st.markdown(f"**{k}**")
-            st.write(info_cli[k])
-    else:
-        st.caption("Nessun dato anagrafico trovato.")
+            with st.form("form_info_cliente"):
+                c1, c2 = st.columns(2)
+                edited = {}
+                for i, k in enumerate(keys):
+                    target = c1 if i % 2 == 0 else c2
+                    with target:
+                        edited[k] = st.text_input(k, value=info_cli.get(k, ""))
+                saved = st.form_submit_button("💾 Salva Dati Cliente (sessione)")
+            if saved:
+                st.session_state.info_overrides[cliente_sel] = edited
+                info_cli = {**info_cli, **edited}
+                st.success("Dati cliente aggiornati (solo in questa sessione).")
 
-    # ----- CONTRATTI SOTTO (con evidenza rosse) -----
-    st.subheader("📑 Contratti di Noleggio")
-
-    red_idx, headers_from_xl = detect_red_rows(uploaded_bytes, foglio)
-
-    if contratti_df is not None and not contratti_df.empty:
-        # Aggiungi colonna Evidenza
-        pretty = clean_table(contratti_df)
-        # riallinea eventuali indici (red_idx è 0-based sui dati)
-        flags = ["🔴" if i in red_idx else "" for i in range(len(pretty))]
-        pretty = pretty.copy()
-        pretty.insert(0, "Evidenza", flags)
-
-        st.checkbox("Colora righe rosse", value=False, key="colorize")
-        if st.session_state.colorize and len(pretty) > 0:
-            # tabella HTML con righe colorate
-            html = style_html_table(pretty, {i for i in range(len(flags)) if flags[i] == "🔴"})
-            st.markdown(html, unsafe_allow_html=True)
+        st.subheader("👤 Dati Cliente")
+        if info_cli:
+            ordered = ["Indirizzo", "Città", "CAP", "TELEFONO", "MAIL", "RIF.", "RIF 2.", "IBAN", "partita iva", "SDI", "Ultimo Recall", "ultima visita"]
+            keys = [k for k in ordered if k in info_cli] + [k for k in info_cli.keys() if k not in ordered]
+            for k in keys:
+                st.markdown(f"**{k}**")
+                st.write(info_cli[k])
         else:
-            st.dataframe(pretty, use_container_width=True, hide_index=True)
-    else:
-        st.info("Nessun contratto trovato in questa scheda.")
+            st.caption("Nessun dato anagrafico trovato.")
 
-    # ----- NOTE -----
-    st.subheader("📝 Note Cliente")
-    new_note = st.text_area("Testo note", value=note_val, height=140, placeholder="Scrivi o aggiorna le note qui…")
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("💾 Salva nota (solo in questa sessione)"):
-            st.session_state.notes_store[cliente_sel] = new_note
-            st.success("Nota salvata nella sessione corrente.")
-    with c2:
-        notes_json = json.dumps(st.session_state.notes_store, ensure_ascii=False, indent=2)
-        st.download_button("⬇️ Esporta tutte le note (JSON)", data=notes_json, file_name="note_clienti.json", mime="application/json")
+        st.subheader("📝 Note Cliente")
+        new_note = st.text_area("Testo note", value=note_val, height=140, placeholder="Scrivi o aggiorna le note qui…")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("💾 Salva nota (solo in questa sessione)"):
+                st.session_state.notes_store[cliente_sel] = new_note
+                st.success("Nota salvata nella sessione corrente.")
+        with c2:
+            notes_json = json.dumps(st.session_state.notes_store, ensure_ascii=False, indent=2)
+            st.download_button("⬇️ Esporta tutte le note (JSON)", data=notes_json, file_name="note_clienti.json", mime="application/json")
+
+    # TAB: CONTRATTI
+    with tab_ctr:
+        st.subheader("📑 Contratti di Noleggio")
+        try:
+            red_idx, _ = detect_red_rows(uploaded_bytes, foglio)
+        except Exception:
+            red_idx = set()
+
+        if contratti_df is not None and not contratti_df.empty:
+            pretty = clean_table(contratti_df)
+            flags = ["🔴" if i in red_idx else "" for i in range(len(pretty))]
+            pretty = pretty.copy()
+            pretty.insert(0, "Evidenza", flags)
+
+            if len(red_idx) > 0:
+                html = style_html_table(pretty, red_idx)
+                st.markdown(html, unsafe_allow_html=True)
+            else:
+                st.dataframe(pretty, use_container_width=True, hide_index=True)
+        else:
+            st.info("Nessun contratto trovato in questa scheda.")
